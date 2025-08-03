@@ -1,68 +1,70 @@
+import shadowPaySDK
 from web3 import Web3
 import json
 from typing import Union, Optional
-
-ERC20_ABI = json.loads("""[
-    {"constant":true,"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"type":"function"},
-    {"constant":true,"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}],"type":"function"},
-    {"constant":true,"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"type":"function"},
-    {"constant":true,"inputs":[],"name":"totalSupply","outputs":[{"name":"","type":"uint256"}],"type":"function"},
-    {"constant":true,"inputs":[{"name":"_owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"","type":"uint256"}],"type":"function"},
-    {"constant":false,"inputs":[{"name":"_to","type":"address"},{"name":"_value","type":"uint256"}],"name":"transfer","outputs":[{"name":"","type":"bool"}],"type":"function"},
-    {"constant":false,"inputs":[{"name":"_spender","type":"address"},{"name":"_value","type":"uint256"}],"name":"approve","outputs":[{"name":"","type":"bool"}],"type":"function"},
-    {"constant":true,"inputs":[{"name":"_owner","type":"address"},{"name":"_spender","type":"address"}],"name":"allowance","outputs":[{"name":"","type":"uint256"}],"type":"function"},
-    {"constant":false,"inputs":[{"name":"_from","type":"address"},{"name":"_to","type":"address"},{"name":"_value","type":"uint256"}],"name":"transferFrom","outputs":[{"name":"","type":"bool"}],"type":"function"}
-]""")
+from shadowPaySDK.const import __ERC20_ABI__
 
 
 class ERC20Token:
-    def __init__(self, web3: Web3, token: str, explorer: Optional[str] = None):
-        self.web3 = web3
+    def __init__(self,  w3: Optional[Web3] = None, explorer: Optional[str] = None):
+        self.web3 = w3
         self.explorer = explorer
-        self.address = Web3.to_checksum_address(token)
-        self.contract = web3.eth.contract(address=self.address, abi=ERC20_ABI)
+
+        self.address = None
+        self.contract = None
+
+    def set_params(self, token_address: Optional[str] = None, w3:Optional[Web3] = None):
+        if w3:
+            self.web3 = w3
+        if token_address:
+            self.address = Web3.to_checksum_address(token_address)
+            self.contract = self.web3.eth.contract(address=self.address, abi=__ERC20_ABI__)
+
+    def _ensure_contract(self):
+        if not self.contract:
+            raise ValueError("Token address is not set. Use set_params first.")
 
     def _format_tx(self, tx_hash: str) -> str:
         if self.explorer:
             return f"{self.explorer.rstrip('/')}/tx/{tx_hash}"
         return tx_hash
-
-
-
+    def gen_wallet(self) -> str:
+        account = self.web3.eth.account.create()
+        return account
     def get_decimals(self) -> int:
+        self._ensure_contract()
+
         return self.contract.functions.decimals().call()
 
     def get_symbol(self) -> str:
+        self._ensure_contract()
         return self.contract.functions.symbol().call()
 
     def get_balance(self, wallet_address: str) -> float:
-        raw_balance = self.contract.functions.balanceOf(
-            Web3.to_checksum_address(wallet_address)
-        ).call()
-        return raw_balance / (10 ** self.get_decimals())
-
         self._ensure_contract()
         raw = self.contract.functions.balanceOf(Web3.to_checksum_address(wallet_address)).call()
-        return raw
+        return raw 
+
+
     def allowance(self, owner: str, spender: str) -> float:
+        self._ensure_contract()
         raw = self.contract.functions.allowance(
             Web3.to_checksum_address(owner),
             Web3.to_checksum_address(spender)
         ).call()
         return raw 
 
-    def ensure_allowance(self, private_key: str, spender: str, amount: float) -> Union[bool, str]:
+    def ensure_allowance(self, private_key: str, spender: str, amount, converted_amount: bool = False) -> Union[bool, str]:
+        self._ensure_contract()
         account = self.web3.eth.account.from_key(private_key)
-        current_allowance = self.allowance(account.address, spender)
-        if current_allowance >= amount:
+        current = self.allowance(account.address, spender)
+        if current == amount:
             return True
-        return self.approve(private_key, spender, amount)
-    
-    def transfer(self, private_key: str, to: str, amount: float) -> str:
-        account = self.web3.eth.account.from_key(private_key)
-        decimals = self.get_decimals()
-        value = int(amount * (10 ** decimals))
+        return self.approve(private_key, spender, amount, conveted_amount=converted_amount)
 
+    def transfer(self, private_key: str, to: str, amount: float) -> str:
+        self._ensure_contract()
+        account = self.web3.eth.account.from_key(private_key)
         
         estimated_gas = self.contract.functions.transfer(
             Web3.to_checksum_address(to),
@@ -77,7 +79,7 @@ class ERC20Token:
         ).build_transaction({
             'from': account.address,
             'nonce': self.web3.eth.get_transaction_count(account.address),
-            'gas': 100_000,
+            'gas': estimated_gas,
             'gasPrice': self.web3.to_wei('5', 'gwei'),
         })
 
@@ -85,13 +87,13 @@ class ERC20Token:
         tx_hash = self.web3.eth.send_raw_transaction(signed.raw_transaction)
         return self._format_tx(self.web3.to_hex(tx_hash))
 
-    def approve(self, private_key: str, spender: str, amount: float) -> str:
-        account = self.web3.eth.account.from_key(private_key)
-        decimals = self.get_decimals()
-        value = int(amount * (10 ** decimals))
+    def approve(self,  spender: str, amount: float,address:Optional[str] = None,  private_key: Optional[str] = None, conveted_amount: bool = True) -> str:
+        
+        self._ensure_contract()
+        key = private_key
 
-        if private_key:
-            address = Web3.to_checksum_address(self.web3.eth.account.from_key(private_key).address)
+        if key:
+            address = Web3.to_checksum_address(self.web3.eth.account.from_key(key).address)
         
         elif self.address:
             address = Web3.to_checksum_address(self.address)
@@ -99,19 +101,19 @@ class ERC20Token:
             raise ValueError("No private key or address provided")
         txn = self.contract.functions.approve(
             Web3.to_checksum_address(spender),
-            value
+            amount
         ).build_transaction({
-            'from': account.address,
-            'nonce': self.web3.eth.get_transaction_count(account.address),
-            'gas': 100_000,
-            'gasPrice': self.web3.to_wei('5', 'gwei'),
+            'from': address,
+            'nonce': self.web3.eth.get_transaction_count(address),
+            'gas': 60000,
+            
+            'gasPrice': self.web3.eth.gas_price,
         })
+        
 
-        signed = self.web3.eth.account.sign_transaction(txn, private_key)
+        signed = self.web3.eth.account.sign_transaction(txn, key)
         tx_hash = self.web3.eth.send_raw_transaction(signed.raw_transaction)
-        return self._format_tx(self.web3.to_hex(tx_hash))
-
-
-
-
-
+        tx_receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
+        if tx_receipt.status != 1:
+            raise ValueError(f"aaprove fail.\n {self._format_tx(self.web3.to_hex(tx_hash))}")
+        return f"{self._format_tx(self.web3.to_hex(tx_hash))}"
