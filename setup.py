@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='shadowPaySDK',
-    version='1.0.5',
+    version='1.0.6',
     description='ShadowPay SDK for ERC20/ERC721 and P2P smart contract interaction',
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
