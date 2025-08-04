@@ -264,7 +264,7 @@ class SOLCheque:
                     AccountMeta(pubkey=pda_pubkey, is_signer=False, is_writable=True),
                     AccountMeta(pubkey=CONFIG_PDA[0], is_signer=False, is_writable=True),  
                     AccountMeta(pubkey=Pubkey.from_string(tressary), is_signer=False, is_writable=True),  
-                    AccountMeta(pubkey=Pubkey.from_string(cheque_data["owner"]), is_signer=False, is_writable=True),  
+                    AccountMeta(pubkey=Pubkey.from_string(owner), is_signer=False, is_writable=True),  
                 ]
             )
 
@@ -399,6 +399,7 @@ class SOLCheque:
                     AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),          # 4 token_program
                     AccountMeta(pubkey=CONFIG_PDA[0], is_signer=False, is_writable=False),             # 5 config_account
                     AccountMeta(pubkey=Pubkey.from_string(tressary), is_signer=False, is_writable=True), # 6 treasury_account
+                    AccountMeta(pubkey=Pubkey.from_string(owner), is_signer=False, is_writable=True)
                 ]
             )
 
