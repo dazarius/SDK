@@ -193,7 +193,7 @@ __SHADOWPAY_ABI__ERC20__= json.loads("""[
 				"type": "bytes32"
 			}
 		],
-		"stateMutability": "nonpayable",
+		"stateMutability": "payable",
 		"type": "function"
 	},
 	{
@@ -223,6 +223,19 @@ __SHADOWPAY_ABI__ERC20__= json.loads("""[
 			}
 		],
 		"stateMutability": "payable",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "PROTOCOL_FEE",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
 		"type": "function"
 	},
 	{
@@ -349,6 +362,16 @@ __SHADOWPAY_ABI__ERC20__= json.loads("""[
 		"outputs": [
 			{
 				"internalType": "address",
+				"name": "tokenIn",
+				"type": "address"
+			},
+			{
+				"internalType": "uint256",
+				"name": "amountIn",
+				"type": "uint256"
+			},
+			{
+				"internalType": "address",
 				"name": "tokenOut",
 				"type": "address"
 			},
@@ -390,6 +413,16 @@ __SHADOWPAY_ABI__ERC20__= json.loads("""[
 				"internalType": "address",
 				"name": "spender",
 				"type": "address"
+			},
+			{
+				"internalType": "address",
+				"name": "token",
+				"type": "address"
+			},
+			{
+				"internalType": "uint256",
+				"name": "amount",
+				"type": "uint256"
 			},
 			{
 				"internalType": "address",
@@ -465,6 +498,11 @@ __SHADOWPAY_ABI__ERC20__= json.loads("""[
 	},
 	{
 		"inputs": [
+			{
+				"internalType": "uint256",
+				"name": "_protocolFee",
+				"type": "uint256"
+			},
 			{
 				"internalType": "uint256",
 				"name": "_minFee",

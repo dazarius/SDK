@@ -478,7 +478,18 @@ class Cheque:
             "receiver": s[5],
             "status": "claimed" if s[6] else "unclaimed"
         }
-
+    async def getFees(self):
+        feesData = await self.contract.functions.getFeeData.call()
+        data = {
+            "protocolFee":    self.w3.from_wei(feesData[0], "ether"),
+            "baseFee":        self.w3.from_wei(feesData[1], "ether"),
+            "minFee":         self.w3.from_wei(feesData[2], "ether"),
+            "maxFee":         self.w3.from_wei(feesData[3], "ether"),
+            "feeBasisPoints": self.w3.from_wei(feesData[4], "ether"),
+            "swapBasicPoints":self.w3.from_wei(feesData[5], "ether"),
+            "FEE_DENOMINATOR":self.w3.from_wei(feesData[6], "ether")
+        }
+        return data
 class NFTcheque:
     def __init__(self, w3:Web3, token:str, amount:int, spender:str):
         self.w3 = w3
