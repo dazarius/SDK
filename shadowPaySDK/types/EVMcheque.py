@@ -1,9 +1,11 @@
 import shadowPaySDK
-from shadowPaySDK.const import __SHADOWPAY_ABI__ERC20__, __ALLOW_CHAINS__, __SHADOWPAY_CONTRACT_ADDRESS__ERC20__
+from shadowPaySDK.const import __SHADOWPAY_ABI__ERC20__, __ALLOW_CHAINS__, __SHADOWPAY_CONTRACT_ADDRESS__ERC20__, __NULL_ADDRESS__
 from web3 import Web3
 from typing import Optional
 import httpx
-
+from eth_abi import encode
+from eth_utils import keccak, to_checksum_address
+import time
 
 class Cheque:
     def __init__(self, w3:Optional[Web3] = None,private_key:Optional[str] = None, ABI = __SHADOWPAY_ABI__ERC20__, allowed_chains = __ALLOW_CHAINS__, retunrn_build_tx:bool = False,address:Optional[str] = None):
@@ -65,13 +67,13 @@ class Cheque:
         else:
             raise ValueError("No address provided or Web3 instance is not set")
 
-    def set_parameters(self,chain_id: Optional[str] = None, w3:Optional[Web3] = None, amount:Optional[int]  = None, private_key:Optional[str] = None, token:Optional[str] = None,address:Optional[str] = None, contract:Optional[str] = None):
+    def set_parameters(self,chain_id: Optional[str] = None, w3:Optional[Web3] = None, amount:Optional[int]  = None, private_key:Optional[str] = None, token:Optional[str] = None,address:Optional[str] = None, contract:Optional[str] = None, ABI = __SHADOWPAY_ABI__ERC20__):
         if  w3:
             self.w3 = w3
             if contract is None:
                 self.get_contract_for_chain(chain_id=chain_id or self.w3.eth.chain_id)
         if contract:
-                self.contract = self.w3.eth.contract(address=contract, abi=__SHADOWPAY_ABI__ERC20__)    
+                self.contract = self.w3.eth.contract(address=contract, abi=ABI)    
         if amount:
             self.amount = amount
         if private_key:
@@ -403,7 +405,31 @@ class Cheque:
             "hash": tx_hash.hex(),
         }
     
-    
+    async def createInvoice(self, payer: str, deadline:int, amount: int,  merchant: str, currency: str = None, allowTips = False, allowPartial = False, private_key: Optional[str] = None):
+        if private_key is None:
+            private_key = self.private_key  
+        
+        acc = self.w3.eth.account.from_key(private_key)
+        nonce = self.w3.eth.get_transaction_count(acc.address)
+        timestamp = int(time.time())
+        id = encoded = encode(
+            ['address', 'uint256', 'uint256', 'uint256'],
+            [to_checksum_address(merchant), nonce + 1, timestamp, deadline]
+        )
+        # estimated_gas = self.contract.functions.createInvoice(
+        #     id,
+        #     Web3.to_checksum_address(currency),
+        #     amount,
+        #     deadline,
+        #     Web3.to_checksum_address(payer),
+        #     allowTips,
+        #     allowPartial
+        # ).estimate_gas({
+        #     'from': acc.address,
+        #     'gasPrice': self.w3.eth.gas_price
+        # })
+        return id
+
     
     
     async def getComunityPool(self):

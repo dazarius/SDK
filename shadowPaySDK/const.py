@@ -13,7 +13,7 @@ __ALLOW_CHAINS__ = [
 ]
 
 
-
+__NULL_ADDRESS__ = "0x0000000000000000000000000000000000000000"
 
 __VERSION__ = "0.1.2"
 
@@ -35,7 +35,8 @@ __SHADOWPAY_CONTRACT_ADDRESS__ERC20__ = {
     10143: "0x1d856f2eA4738d1a89E27dbfc8950a4976Db41a5"
   }
 
-__SHADOWPAY_ABI__ERC20__= json.loads("""[
+
+__SHADOWPAY_ABI__ERC20__ = json.loads("""[
 	{
 		"inputs": [
 			{
@@ -339,6 +340,49 @@ __SHADOWPAY_ABI__ERC20__= json.loads("""[
 	},
 	{
 		"inputs": [],
+		"name": "getFeeData",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "_protocolFee",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "_baseFee",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "_minFee",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "_maxFees",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "_feeBasisPoints",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "_swapBasicPoints",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "_feeDenominator",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
 		"name": "getOwner",
 		"outputs": [
 			{
@@ -515,11 +559,6 @@ __SHADOWPAY_ABI__ERC20__= json.loads("""[
 			},
 			{
 				"internalType": "uint256",
-				"name": "_minEth",
-				"type": "uint256"
-			},
-			{
-				"internalType": "uint256",
 				"name": "_baseFee",
 				"type": "uint256"
 			}
@@ -661,8 +700,175 @@ __SHADOWPAY_ABI__ERC20__= json.loads("""[
 		"type": "function"
 	}
 ]""")
-
 __SHADOWPAY_ABI__ERC721__ = json.loads("""[]""")
+__SHADOWPAY_ABI__INVOISE__ = json.loads("""[
+  {
+    "inputs": [
+      { "internalType": "address", "name": "_treasury", "type": "address" },
+      { "internalType": "uint256", "name": "_feeBps", "type": "uint256" }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [
+      { "internalType": "address", "name": "token", "type": "address" }
+    ],
+    "name": "SafeERC20FailedOperation",
+    "type": "error"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "bytes32", "name": "id", "type": "bytes32" }
+    ],
+    "name": "InvoiceCanceled",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "bytes32", "name": "id", "type": "bytes32" },
+      { "indexed": true, "internalType": "address", "name": "merchant", "type": "address" },
+      { "indexed": false, "internalType": "address", "name": "token", "type": "address" },
+      { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" }
+    ],
+    "name": "InvoiceCreated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "bytes32", "name": "id", "type": "bytes32" },
+      { "indexed": true, "internalType": "address", "name": "payer", "type": "address" },
+      { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "tip", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "fee", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "toMerchant", "type": "uint256" }
+    ],
+    "name": "InvoicePaid",
+    "type": "event"
+  },
+  {
+    "inputs": [],
+    "name": "FEE_DENOMINATOR",
+    "outputs": [
+      { "internalType": "uint256", "name": "", "type": "uint256" }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "bytes32", "name": "id", "type": "bytes32" }
+    ],
+    "name": "cancelInvoice",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "address", "name": "merchant", "type": "address" },
+      { "internalType": "address", "name": "token", "type": "address" },
+      { "internalType": "uint128", "name": "amount", "type": "uint128" },
+      { "internalType": "uint64", "name": "dueAt", "type": "uint64" },
+      { "internalType": "address", "name": "payer", "type": "address" },
+      { "internalType": "bytes32", "name": "salt", "type": "bytes32" }
+    ],
+    "name": "computeId",
+    "outputs": [
+      { "internalType": "bytes32", "name": "", "type": "bytes32" }
+    ],
+    "stateMutability": "pure",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "bytes32", "name": "id", "type": "bytes32" },
+      { "internalType": "address", "name": "token", "type": "address" },
+      { "internalType": "uint128", "name": "amount", "type": "uint128" },
+      { "internalType": "uint64", "name": "dueAt", "type": "uint64" },
+      { "internalType": "address", "name": "payer", "type": "address" },
+      { "internalType": "bool", "name": "allowTips", "type": "bool" },
+      { "internalType": "bool", "name": "allowPartial", "type": "bool" }
+    ],
+    "name": "createInvoice",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "bytes32", "name": "", "type": "bytes32" }
+    ],
+    "name": "invoices",
+    "outputs": [
+      { "internalType": "address", "name": "merchant", "type": "address" },
+      { "internalType": "address", "name": "token", "type": "address" },
+      { "internalType": "uint128", "name": "amount", "type": "uint128" },
+      { "internalType": "uint128", "name": "paid", "type": "uint128" },
+      { "internalType": "uint64", "name": "createdAt", "type": "uint64" },
+      { "internalType": "uint64", "name": "dueAt", "type": "uint64" },
+      { "internalType": "address", "name": "payer", "type": "address" },
+      { "internalType": "bool", "name": "allowTips", "type": "bool" },
+      { "internalType": "bool", "name": "allowPartial", "type": "bool" },
+      { "internalType": "bool", "name": "canceled", "type": "bool" }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          { "internalType": "address", "name": "merchant", "type": "address" },
+          { "internalType": "address", "name": "token", "type": "address" },
+          { "internalType": "uint128", "name": "amount", "type": "uint128" },
+          { "internalType": "uint128", "name": "paid", "type": "uint128" },
+          { "internalType": "uint64", "name": "createdAt", "type": "uint64" },
+          { "internalType": "uint64", "name": "dueAt", "type": "uint64" },
+          { "internalType": "address", "name": "payer", "type": "address" },
+          { "internalType": "bool", "name": "allowTips", "type": "bool" },
+          { "internalType": "bool", "name": "allowPartial", "type": "bool" },
+          { "internalType": "bool", "name": "canceled", "type": "bool" }
+        ],
+        "internalType": "struct InvoiceHub.Invoice",
+        "name": "inv",
+        "type": "tuple"
+      }
+    ],
+    "name": "isSettled",
+    "outputs": [
+      { "internalType": "bool", "name": "", "type": "bool" }
+    ],
+    "stateMutability": "pure",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "bytes32", "name": "id", "type": "bytes32" },
+      { "internalType": "uint256", "name": "amount", "type": "uint256" },
+      { "internalType": "uint256", "name": "tip", "type": "uint256" }
+    ],
+    "name": "payERC20",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "bytes32", "name": "id", "type": "bytes32" },
+      { "internalType": "uint256", "name": "amount", "type": "uint256" },
+      { "internalType": "uint256", "name": "tip", "type": "uint256" }
+    ],
+    "name": "payETH",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  }
+]
+""")
 __SHADOWPAY_CONTRACT_ADDRESS__ERC721__ = {
     "0x1": "0x3c5b8d6f2e"
 }
