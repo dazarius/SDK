@@ -1,9 +1,12 @@
+import token
 import shadowPaySDK
 from shadowPaySDK.const import __SHADOWPAY_ABI__ERC20__, __ALLOW_CHAINS__, __SHADOWPAY_CONTRACT_ADDRESS__ERC20__, __NULL_ADDRESS__
 from web3 import Web3
 from typing import Optional
 import httpx
 from eth_abi import encode
+from eth_abi.packed import encode_packed
+
 from eth_utils import keccak, to_checksum_address
 import time
 
@@ -213,7 +216,7 @@ class Cheque:
 
 
         
-        erc20 = shadowPaySDK.ERC20(web3=self.w3)
+        erc20 = shadowPaySDK.ERC20Token(w3=self.w3)
 
         erc20.set_params(token_address=token_address)
         decimals = erc20.get_decimals()
@@ -404,38 +407,178 @@ class Cheque:
         return {
             "hash": tx_hash.hex(),
         }
-    
-    async def createInvoice(self, payer: str, deadline:int, amount: int,  merchant: str, currency: str = None, allowTips = False, allowPartial = False, private_key: Optional[str] = None):
+    ################################ invoice logic ################################
+
+    async def getInvoiceFee(self):
+        fee = self.contract.functions.getFee().call()
+        return {
+            "baseFee": fee[0],
+            "maxFee": fee[1],
+            "feeBps": fee[2],
+            "nextFeeBps": fee[3],
+            "FEE_DENOMINATOR": fee[4]
+        }
+
+
+
+
+
+    #####################################################################################################
+    #                               fee calculated for invoice                                          #
+    #####################################################################################################
+    # $$$$$$$$$$$$$$$$$ ETH invoice $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+    #        for native currency(ETH,BNB etc...) used  0x0000000000000000000000000000000000000000 address 
+    #        @notice msg.value must be equal to the calculated fee
+    #        @formula used to calculate commission amount * feeBps / FEE_DENOMINATOR + baseFee where feeBps is the fee in basis points
+    #        UPD: percentage of the amount it cannot exceed 10%
+    #
+    #        require(msg.value == pctFee, "fee reqired");
+    #        fee = pctFee;
+    # $$$$$$$$$$$$$$$$$ ERC20(token) invoice $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+    #        for ERC20 token used token address
+    #        @notice msg.value must be equal to the baseFee
+    #        @formula used to calculate commission amount * feeBps / FEE_DENOMINATOR where feeBps is the fee in basis points
+    #        UPD: percentage of the amount it cannot exceed 10%
+    ##############################################################################################################################
+
+
+    async def createInvoice(self, payer: str, deadline:int, amount: int,  merchant: str, value:int, currency: str = None, allowTips = False, allowPartial = False, private_key: Optional[str] = None):
         if private_key is None:
             private_key = self.private_key  
         
+        timestamp = int(time.time())
         acc = self.w3.eth.account.from_key(private_key)
         nonce = self.w3.eth.get_transaction_count(acc.address)
-        timestamp = int(time.time())
-        id = encoded = encode(
-            ['address', 'uint256', 'uint256', 'uint256'],
-            [to_checksum_address(merchant), nonce + 1, timestamp, deadline]
+        
+        packed = encode_packed(
+            ['address', 'address', 'uint256', 'uint256', 'uint256'],
+            [merchant,  payer,     amount,     deadline, timestamp]
         )
-        # estimated_gas = self.contract.functions.createInvoice(
-        #     id,
-        #     Web3.to_checksum_address(currency),
-        #     amount,
-        #     deadline,
-        #     Web3.to_checksum_address(payer),
-        #     allowTips,
-        #     allowPartial
-        # ).estimate_gas({
-        #     'from': acc.address,
-        #     'gasPrice': self.w3.eth.gas_price
-        # })
-        return id
 
-    
-    
+        id = Web3.keccak(packed)
+        hex_id = id.hex()
+        
+
+
+        print(f"Creating invoice with ID: {hex_id}\nAmount: {amount}\nMerchant: {merchant}\nCurrency: {currency}" )
+        estimated_gas = self.contract.functions.createInvoice(
+            id,
+            Web3.to_checksum_address(merchant),
+            Web3.to_checksum_address(currency),
+            amount,
+            deadline,
+            Web3.to_checksum_address(payer),
+            allowTips,
+            allowPartial
+        ).estimate_gas({
+            "value": value,
+            'from': acc.address,
+            'gasPrice': self.w3.eth.gas_price
+        })
+        txn = self.contract.functions.createInvoice(
+            id,
+            Web3.to_checksum_address(merchant),
+            Web3.to_checksum_address(currency),
+            amount,
+            deadline,
+            Web3.to_checksum_address(payer),
+            allowTips,
+            allowPartial
+        ).build_transaction({
+            "value": value,
+            'from': acc.address,
+            'nonce': nonce,
+            'gas': estimated_gas,
+            'gasPrice': self.w3.eth.gas_price
+        })
+        try:
+            sign_txn = self.w3.eth.account.sign_transaction(txn, private_key=private_key)
+            tx = self.w3.eth.send_raw_transaction(sign_txn.raw_transaction)
+            if self.w3.eth.wait_for_transaction_receipt(tx).status != 1:
+                return False
+            return hex_id, tx.hex()
+        except Exception as e:
+            print(f"Error creating invoice: {e}")
+            return False
+    async def payETHInvoice(self, id:str, amount:int,private_key: Optional[str] = None, tip = 0):
+        fees = await self.getInvoiceFee()
+        if private_key is None:
+            private_key = self.private_key
+        value = amount + (tip * fees["nextFeeBps"]) // fees["FEE_DENOMINATOR"]
+
+        acc = self.w3.eth.account.from_key(private_key)
+        nonce = self.w3.eth.get_transaction_count(acc.address)
+        estimated_gas = self.contract.functions.payETH(
+            Web3.to_bytes(hexstr=id),
+            amount,
+            tip
+        ).estimate_gas({
+            'value': value,
+            'from': acc.address,
+            'gasPrice': self.w3.eth.gas_price
+        })
+        txn = self.contract.functions.payETH(
+            Web3.to_bytes(hexstr=id),
+            amount,
+            tip
+        ).build_transaction({
+            "value": value,
+            'from': acc.address,
+            'nonce': nonce,
+            'gas': estimated_gas,
+            'gasPrice': self.w3.eth.gas_price
+        })
+        try:
+            sign_txn = self.w3.eth.account.sign_transaction(txn, private_key=private_key)
+            tx = self.w3.eth.send_raw_transaction(sign_txn.raw_transaction)
+            if self.w3.eth.wait_for_transaction_receipt(tx).status != 1:
+                return False
+            return tx.hex()
+        except Exception as e:
+            print(f"Error paying invoice: {e}")
+            return False
+
+
+    async def payERC20invoice(self,id,amount, tip = 0, private_key=None):
+        fees = await self.getInvoiceFee()
+        value = fees["baseFee"]
+        if private_key is None:
+            private_key = self.private_key
+        nonce = self.w3.eth.get_transaction_count(self.w3.eth.account.from_key(private_key).address)
+        estimated_gas = self.contract.functions.payERC20(
+            Web3.to_bytes(hexstr=id),
+            amount,
+            tip
+        ).estimate_gas({
+            'value': value,
+            'from': self.w3.eth.account.from_key(private_key).address,
+            'gasPrice': self.w3.eth.gas_price,
+            'nonce': nonce
+        })
+        txn = self.contract.functions.payERC20(
+            Web3.to_bytes(hexstr=id),
+            amount,
+            tip
+        ).build_transaction({
+            'value': value,
+            'from': self.w3.eth.account.from_key(private_key).address,
+            'gas': estimated_gas,
+            'gasPrice': self.w3.eth.gas_price,
+            'nonce': nonce
+        })
+        try:
+            sign_txn = self.w3.eth.account.sign_transaction(txn, private_key=private_key)
+            tx = self.w3.eth.send_raw_transaction(sign_txn.raw_transaction)
+            if self.w3.eth.wait_for_transaction_receipt(tx).status != 1:
+                return False
+            return tx.hex()
+        except Exception as e:
+            print(f"Error paying invoice: {e}")
+            return False
+
     async def getComunityPool(self):
         fee = self.contract.functions.getCollectedFee().call()
-        half_fee_eth = self.w3.from_wei(fee // 2, 'ether')
-        return half_fee_eth
+        return fee
     async def getOwner(self):
         return self.contract.functions.getOwner().call()
     async def getTreasery(self):
@@ -505,15 +648,14 @@ class Cheque:
             "status": "claimed" if s[6] else "unclaimed"
         }
     async def getFees(self):
-        feesData = await self.contract.functions.getFeeData.call()
+        feesData = self.contract.functions.getFeeData.call()
         data = {
             "protocolFee":    self.w3.from_wei(feesData[0], "ether"),
             "baseFee":        self.w3.from_wei(feesData[1], "ether"),
             "minFee":         self.w3.from_wei(feesData[2], "ether"),
             "maxFee":         self.w3.from_wei(feesData[3], "ether"),
-            "feeBasisPoints": self.w3.from_wei(feesData[4], "ether"),
-            "swapBasicPoints":self.w3.from_wei(feesData[5], "ether"),
-            "FEE_DENOMINATOR":self.w3.from_wei(feesData[6], "ether")
+            "bps": feesData[4],
+            "FEE_DENOMINATOR":feesData[5]
         }
         return data
 class NFTcheque:
