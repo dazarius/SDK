@@ -1,6 +1,6 @@
 import token
-import shadowPaySDK
-from shadowPaySDK.const import __SHADOWPAY_ABI__ERC20__, __ALLOW_CHAINS__, __SHADOWPAY_CONTRACT_ADDRESS__ERC20__, __NULL_ADDRESS__
+import OrbisPaySDK
+from OrbisPaySDK.const import __SHADOWPAY_ABI__ERC20__, __ALLOW_CHAINS__, __SHADOWPAY_CONTRACT_ADDRESS__ERC20__, __NULL_ADDRESS__
 from web3 import Web3
 from typing import Optional
 import httpx
@@ -216,7 +216,7 @@ class Cheque:
 
 
         
-        erc20 = shadowPaySDK.ERC20Token(w3=self.w3)
+        erc20 = OrbisPaySDK.ERC20Token(w3=self.w3)
 
         erc20.set_params(token_address=token_address)
         decimals = erc20.get_decimals()
@@ -307,7 +307,7 @@ class Cheque:
             address = Web3.to_checksum_address(self.w3.eth.account.from_key(key).address)
         elif self.address:
             address = Web3.to_checksum_address(self.address)
-        erc20 = shadowPaySDK.ERC20Token(w3=self.w3)
+        erc20 = OrbisPaySDK.ERC20Token(w3=self.w3)
         erc20.set_params(token_address=token_in)
         approve = erc20.allowance(
             spender=self.contract.address, 
@@ -365,7 +365,7 @@ class Cheque:
             private_key = self.private_key
         token_out = swapDetail["tokenOut"]
         amount_out = swapDetail["amountOut"]
-        erc20 = shadowPaySDK.ERC20Token(w3=self.w3)
+        erc20 = OrbisPaySDK.ERC20Token(w3=self.w3)
         erc20.set_params(token_address=token_out)
         encure_allowance = erc20.allowance(
             spender=self.contract.address, 

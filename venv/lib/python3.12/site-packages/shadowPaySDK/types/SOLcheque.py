@@ -2,7 +2,7 @@
 import anchorpy
 from anchorpy import Idl, Provider, Wallet
 import solders
-from shadowPaySDK.interface.sol import SOL
+from OrbisPaySDK.interface.sol import SOL
 import solders  
 import spl.token.constants as spl_constants
 from solana.rpc.api import Client
@@ -47,7 +47,7 @@ import httpx
 import base64
 import re
 import struct
-from shadowPaySDK.const import LAMPORTS_PER_SOL, PROGRAM_ID, CONFIG_PDA
+from OrbisPaySDK.const import LAMPORTS_PER_SOL, PROGRAM_ID, CONFIG_PDA
 
 
 

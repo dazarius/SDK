@@ -1,4 +1,4 @@
-from shadowPaySDK.types.SOLcheque import SOLCheque
+from OrbisPaySDK.types.SOLcheque import SOLCheque
 import asyncio
 import time
 

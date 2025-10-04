@@ -1,8 +1,8 @@
-import shadowPaySDK
+import OrbisPaySDK
 from web3 import Web3
 import json
 from typing import Union, Optional
-from shadowPaySDK.const import __ERC20_ABI__
+from OrbisPaySDK.const import __ERC20_ABI__
 
 
 class ERC20Token:
