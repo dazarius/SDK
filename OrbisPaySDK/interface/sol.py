@@ -209,7 +209,7 @@ class SOL:
             ts(tsf(
                 from_pubkey=sender_pubkey,
                 to_pubkey=receiver_pubkey,
-                lamports=int(amount * LAMPORTS_PER_SOL)
+                lamports=amount * LAMPORTS_PER_SOL
             ))
         ]
         msg = Message(ixns, self.get_pubkey())

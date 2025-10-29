@@ -62,9 +62,11 @@ class ERC20Token:
             return True
         return self.approve(private_key, spender, amount, conveted_amount=converted_amount)
 
-    def transfer(self, private_key: str, to: str, amount: float) -> str:
+    def transfer(self, private_key: str, to: str, amount: float, decimals: int = None) -> str:
         self._ensure_contract()
         account = self.web3.eth.account.from_key(private_key)
+        if decimals:
+            amount = int(amount * (10 ** decimals))
         
         estimated_gas = self.contract.functions.transfer(
             Web3.to_checksum_address(to),
