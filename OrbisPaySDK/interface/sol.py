@@ -14,6 +14,9 @@ from solana.rpc.types import TxOpts, TokenAccountOpts
 from solana.rpc.types import TxOpts
 import solders
 from solders.message import Message
+import OrbisPaySDK.const as const
+from typing import List, Dict, Any, Optional
+
 
 # from solders.pubkey import Pubkey
 # from solders.keypair import Keypair
@@ -219,6 +222,115 @@ class SOL:
         tx = Transaction([self.KEYPAIR], msg, blockhash_str)
         resp =  await self.client.send_transaction(tx)
         return resp.value
+    async def build_transaction(self,data):
+        recent_blockhash = self.client.get_latest_blockhash(Confirmed).value.blockhash
+
+        _from = solders.pubkey.Pubkey.from_string(data["_from"])
+        _to = solders.pubkey.Pubkey.from_string(data["_to"])
+        _amount = data["_amount"]
+        
+                
+        tx = Transaction()
+        if data["_token"] == const.__SOL__MINT__:
+            lamports = int(_amount * const.LAMPORTS_PER_SOL)
+            instruction = transfer(
+                TransferParams(
+                    from_pubkey=_from,
+                    to_pubkey=_to,
+                    lamports=lamports
+                )
+            )
+
+            message = Message([instruction], _from)
+            tx = Transaction(message, recent_blockhash)
+        return {
+            "tx": tx.to_solders().to_bytes().hex(),
+            "recent_blockhash": str(recent_blockhash),
+        }
+    async def sign_and_send_json(
+        self,
+        json_payload: Dict[str, Any],
+        secret_key_bytes: bytes,
+        rpc_url: str,
+        wait_for_confirmation: bool = True,
+        timeout: int = 60
+    ) -> Dict[str, Any]:
+        """
+        Wallet-side: sign JSON-built transaction and send it.
+        - json_payload: dict created by build_tx_json / build_tx_json_transfer
+        - secret_key_bytes: 64-byte or 32-byte secret key for Keypair.from_secret_key
+        - rpc_url: RPC to send transaction
+        Returns dict: {"tx_sig": "...", "status": "sent"} or raises
+        """
+        client = self.client
+
+        # Build TransactionMessage
+        message = _build_transaction_message_from_json(json_payload)
+
+        # serialize message and sign it with Keypair
+        kp = Keypair.from_secret_key(secret_key_bytes)
+
+        serialized_msg = message.serialize()
+        # Keypair.sign expects bytes and returns Signature object or bytes depending on solana-py version
+        signature_obj = kp.sign(serialized_msg)
+        # normalize signature bytes
+        if isinstance(signature_obj, (bytes, bytearray)):
+            sig_bytes = bytes(signature_obj)
+        else:
+            # many versions return an object with .signature attribute
+            sig_bytes = getattr(signature_obj, "signature", None)
+            if sig_bytes is None:
+                # fallback: try to call .to_bytes() or similar
+                try:
+                    sig_bytes = bytes(signature_obj)
+                except Exception:
+                    raise RuntimeError("Failed to extract signature bytes from Keypair.sign result")
+
+        # assemble VersionedTransaction
+        vt = VersionedTransaction(message=message, signatures=[sig_bytes])
+        raw = vt.serialize()
+
+        # send
+        resp = client.send_raw_transaction(raw)
+        # resp usually contains tx signature (string) or error
+        # solana-py returns the tx sig as e.g. {'result': '...'} or directly string depending on version,
+        # so attempt to extract:
+        tx_sig = None
+        if isinstance(resp, dict):
+            # typical shape: {"result": "5xxx...", ...}
+            tx_sig = resp.get("result") or resp.get("transaction") or resp.get("tx")
+            # if nested
+            if isinstance(tx_sig, dict):
+                tx_sig = tx_sig.get("transaction") or tx_sig.get("signature")
+        else:
+            tx_sig = resp
+
+        if not tx_sig:
+            # raising with full resp for debug
+            raise RuntimeError(f"send_raw_transaction returned unexpected response: {resp}")
+
+        result = {"tx_sig": tx_sig, "status": "sent"}
+
+        if wait_for_confirmation:
+            # wait for receipt/confirmation
+            # use confirm_transaction or get_confirmed_transaction (APIs vary)
+            # We'll poll for get_confirmed_transaction/get_transaction
+            import time
+            start = time.time()
+            while time.time() - start < timeout:
+                # try v1 get_confirmed
+                try:
+                    info = client.get_transaction(tx_sig)
+                except Exception:
+                    info = client.get_confirmed_transaction(tx_sig) if hasattr(client, "get_confirmed_transaction") else None
+                if info and ( (isinstance(info, dict) and info.get("result")) or info is not None):
+                    result["status"] = "confirmed"
+                    result["receipt"] = info
+                    return result
+                time.sleep(1)
+            # timeout
+            result["status"] = "pending"
+        return result
 
 
 
