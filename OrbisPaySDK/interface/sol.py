@@ -107,6 +107,7 @@ class SOL:
             ]
         }
         async with httpx.AsyncClient() as client:
+            
             response = await client.post(self.rpc_url, headers=headers, json=body)
             result = response.json()
             accounts = result["result"]["value"]
