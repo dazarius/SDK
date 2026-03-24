@@ -90,7 +90,7 @@ class Cheque:
     def __convert__(self):
         return self.w3.to_wei(self.amount, 'ether')
     
-    async def InitCheque(self, amount,  receiver:list, private_key:Optional[str] = None):
+    async def InitCheque(self,support_bps, amount,  receiver:list, private_key:Optional[str] = None):
         if  not isinstance(receiver,list):
             raise ValueError("Receiver must be a list of addresses, [""0x1234...5678", "0x2345...6789""]")
 
@@ -110,7 +110,7 @@ class Cheque:
 
 
         receiver = [Web3.to_checksum_address(addr) for addr in receiver]
-        estimated_gas = self.contract.functions.InitCheque(receiver).estimate_gas({
+        estimated_gas = self.contract.functions.InitCheque(receiver, support_bps).estimate_gas({
             'from': address,
             'value': self.w3.to_wei(amount, 'ether'),
             'gasPrice': self.w3.eth.gas_price
@@ -201,7 +201,7 @@ class Cheque:
             return False
         return {"hash": tx_hash.hex()}
     
-    async def InitTokenCheque(self, token_address:str, amount, reciver:str, private_key:Optional[str] = None):
+    async def InitTokenCheque(self, support_bps, token_address:str, amount, reciver:str, private_key:Optional[str] = None):
         key = private_key or self.private_key
 
         if key:
@@ -227,7 +227,8 @@ class Cheque:
         estimated_gas = self.contract.functions.InitTokenCheque(
             Web3.to_checksum_address(token_address),
             amount,
-            Web3.to_checksum_address(reciver)
+            Web3.to_checksum_address(reciver),
+            support_bps
         ).estimate_gas({
             'from': address,
             'gasPrice': self.w3.eth.gas_price
@@ -235,7 +236,8 @@ class Cheque:
         txn = self.contract.functions.InitTokenCheque(
             Web3.to_checksum_address(token_address),
             amount,
-            Web3.to_checksum_address(reciver)
+            Web3.to_checksum_address(reciver),
+            support_bps
         ).build_transaction({
             'from': address,
             'nonce': self.w3.eth.get_transaction_count(address),
@@ -243,9 +245,7 @@ class Cheque:
             'gasPrice': self.w3.eth.gas_price
         })
         if self.return_build_tx:
-            return {
-                "build_tx": txn
-            }
+                return txn
         signed_txn = self.w3.eth.account.sign_transaction(txn, key)
         txn_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
         txn_receipt = self.w3.eth.wait_for_transaction_receipt(txn_hash)
@@ -301,7 +301,7 @@ class Cheque:
             "hash": tx_hash.hex(),
             "status": receipt.status  # 1 = success, 0 = fail
         }
-    async def InitTokenChequeSwap(self, token_in:str, amount_in,token_out:str, amount_out, reciver:str, private_key:Optional[str] = None):
+    async def InitTokenChequeSwap(self, support_bps, token_in:str, amount_in,token_out:str, amount_out, reciver:str, private_key:Optional[str] = None):
         key = private_key or self.private_key
         if key:
             address = Web3.to_checksum_address(self.w3.eth.account.from_key(key).address)
@@ -321,7 +321,9 @@ class Cheque:
             Web3.to_checksum_address(token_in),
             amount_in,
             Web3.to_checksum_address(token_out),
+            support_bps,
             amount_out,
+            support_bps
         ).estimate_gas({
             'from': address,
             'gasPrice': self.w3.eth.gas_price
@@ -331,7 +333,8 @@ class Cheque:
             Web3.to_checksum_address(token_in),
             amount_in,
             Web3.to_checksum_address(token_out),
-            amount_out
+            amount_out,
+            support_bps
         ).build_transaction({
             'from': address,
             'nonce': self.w3.eth.get_transaction_count(address),
@@ -339,9 +342,8 @@ class Cheque:
             'gasPrice': self.w3.eth.gas_price
         })
         if self.return_build_tx:
-            return {
-                "build_tx": txn
-            }
+            return txn
+            
         signed_txn = self.w3.eth.account.sign_transaction(txn, key)
         txn_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
         txn_receipt = self.w3.eth.wait_for_transaction_receipt(txn_hash)

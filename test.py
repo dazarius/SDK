@@ -1,7 +1,9 @@
 from OrbisPaySDK.types.SOLcheque import SOLCheque
+from OrbisPaySDK.interface.sol import SOL
 import asyncio
 import time
-
+import requests
+import json
 k = SOLCheque(
     rpc_url="https://api.devnet.solana.com",
     key=""
@@ -31,17 +33,27 @@ async def efwa2():
 
     cheque["signature"] = f"https://solscan.io/tx/{cheque['signature']}?cluster=devnet"
     return cheque
-    
+
+def download_asset():
+    uri = "https://tokens.1inch.io/v1.1/1"
+    res = requests.get(uri)
+    with open("assets.json", "w") as f:
+        json.dump(res.json(), f, indent=4)
+def get_sol_tokens_balance(address:str = "C3MhUqKFRkkTRBRZcH7EKoD8c1iose9T3tPb7qiytzxs"):
+    s = SOL(
+        rpc_url="https://api.devnet.solana.com",
+    )
+    print(asyncio.run(s.get_token_accounts_by_owner(owner_pubkey=address)))
 if __name__ == "__main__":
     # print(k.parse_swap_cheque_data(pda="FejNYkUCn3f9FErTWrGPdD2tZnqkCdBw8pbjCNdezt84"))
-    print(asyncio.run(efwa()))
+    # print(asyncio.run(efwa()))
     
 
 
-    k.set_params(
-        key=""
-    )
-    time.sleep(5)
+    # k.set_params(
+    #     key=""
+    # )
+    # time.sleep(5)
 
-    print(asyncio.run(efwa2()))
+    get_sol_tokens_balance()
     # print(k.get_config())

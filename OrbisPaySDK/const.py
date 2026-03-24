@@ -12,8 +12,124 @@ __ALLOW_CHAINS__ = [
     0xa 
 ]
 
-__SOL__MINT__ = "101SOL"
+__SOL__NATIVE__ = "So11111111111111111111111111111111111111111"
 __NULL_ADDRESS__ = "0x0000000000000000000000000000000000000000"
+__MULTICALL3__ = "0xcA11bde05977b3631167028862bE2a173976CA11"
+__MULTICALL3_ABI__ = [
+    {
+        "inputs": [{"components": [{"name": "target","type": "address"},{"name": "callData","type": "bytes"}],"name": "calls","type": "tuple[]"}],
+        "name": "aggregate",
+        "outputs": [{"name": "blockNumber","type": "uint256"},{"name": "returnData","type": "bytes[]"}],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [{"components": [{"name": "target","type": "address"},{"name": "allowFailure","type": "bool"},{"name": "callData","type": "bytes"}],"name": "calls","type": "tuple[]"}],
+        "name": "aggregate3",
+        "outputs": [{"components": [{"name": "success","type": "bool"},{"name": "returnData","type": "bytes"}],"name": "returnData","type": "tuple[]"}],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [{"components": [{"name": "target","type": "address"},{"name": "allowFailure","type": "bool"},{"name": "value","type": "uint256"},{"name": "callData","type": "bytes"}],"name": "calls","type": "tuple[]"}],
+        "name": "aggregate3Value",
+        "outputs": [{"components": [{"name": "success","type": "bool"},{"name": "returnData","type": "bytes"}],"name": "returnData","type": "tuple[]"}],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [{"components": [{"name": "target","type": "address"},{"name": "callData","type": "bytes"}],"name": "calls","type": "tuple[]"}],
+        "name": "blockAndAggregate",
+        "outputs": [{"name": "blockNumber","type": "uint256"},{"name": "blockHash","type": "bytes32"},{"components": [{"name": "success","type": "bool"},{"name": "returnData","type": "bytes"}],"name": "returnData","type": "tuple[]"}],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getBasefee",
+        "outputs": [{"name": "basefee","type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [{"name": "blockNumber","type": "uint256"}],
+        "name": "getBlockHash",
+        "outputs": [{"name": "blockHash","type": "bytes32"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getBlockNumber",
+        "outputs": [{"name": "blockNumber","type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getChainId",
+        "outputs": [{"name": "chainid","type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getCurrentBlockCoinbase",
+        "outputs": [{"name": "coinbase","type": "address"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getCurrentBlockDifficulty",
+        "outputs": [{"name": "difficulty","type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getCurrentBlockGasLimit",
+        "outputs": [{"name": "gaslimit","type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getCurrentBlockTimestamp",
+        "outputs": [{"name": "timestamp","type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [{"name": "addr","type": "address"}],
+        "name": "getEthBalance",
+        "outputs": [{"name": "balance","type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getLastBlockHash",
+        "outputs": [{"name": "blockHash","type": "bytes32"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [{"name": "requireSuccess","type": "bool"},{"components": [{"name": "target","type": "address"},{"name": "callData","type": "bytes"}],"name": "calls","type": "tuple[]"}],
+        "name": "tryAggregate",
+        "outputs": [{"components": [{"name": "success","type": "bool"},{"name": "returnData","type": "bytes"}],"name": "returnData","type": "tuple[]"}],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [{"name": "requireSuccess","type": "bool"},{"components": [{"name": "target","type": "address"},{"name": "callData","type": "bytes"}],"name": "calls","type": "tuple[]"}],
+        "name": "tryBlockAndAggregate",
+        "outputs": [{"name": "blockNumber","type": "uint256"},{"name": "blockHash","type": "bytes32"},{"components": [{"name": "success","type": "bool"},{"name": "returnData","type": "bytes"}],"name": "returnData","type": "tuple[]"}],
+        "stateMutability": "payable",
+        "type": "function"
+    }
+]
+
 
 __VERSION__ = "0.1.2"
 
@@ -34,8 +150,532 @@ __SHADOWPAY_CONTRACT_ADDRESS__ERC20__ = {
     97: "0x5487C0DdCbD5465F26B446c6CAB88D8d6F7DF23b",
     10143: "0x1d856f2eA4738d1a89E27dbfc8950a4976Db41a5"
   }
-
-
+ERC20_SIGNATURES = {
+    "0xa9059cbb": ("Transfer", "Sending tokens to recipient"),
+    "0x095ea7b3": ("Approve", "Allowing contract to use your tokens"),
+    "0x23b872dd": ("TransferFrom", "Contract moves tokens on your behalf"),
+    "0x7ff36ab5": ("Swap (Uniswap/Pancake)", "Exchanging tokens via router"),
+    "0x18cbafe5": ("Swap Extract Tokens", "Exchanging fixed amount of tokens"),
+    "0x38ed1739": ("Swap Extract ETH for Tokens", "Buying tokens with native BNB/ETH"),
+    "0x791ac947": ("Swap Extract Tokens for ETH", "Selling tokens for native BNB/ETH"),
+    "0xf3056030": ("Add Liquidity", "Providing assets to a pool"),
+    "0xbaa2abde": ("Remove Liquidity", "Withdrawing assets from a pool"),
+}
+__ORBISPAY_DOMAIN_ABI = json.loads("""[
+                                   [
+	{
+		"inputs": [],
+		"stateMutability": "nonpayable",
+		"type": "constructor"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": true,
+				"internalType": "string",
+				"name": "domain",
+				"type": "string"
+			},
+			{
+				"indexed": true,
+				"internalType": "address",
+				"name": "owner",
+				"type": "address"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "expiresAt",
+				"type": "uint256"
+			}
+		],
+		"name": "DomainRegistered",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": true,
+				"internalType": "string",
+				"name": "domain",
+				"type": "string"
+			}
+		],
+		"name": "DomainReleased",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": true,
+				"internalType": "string",
+				"name": "domain",
+				"type": "string"
+			},
+			{
+				"indexed": true,
+				"internalType": "address",
+				"name": "owner",
+				"type": "address"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "newExpiresAt",
+				"type": "uint256"
+			}
+		],
+		"name": "DomainRenewed",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": true,
+				"internalType": "string",
+				"name": "domain",
+				"type": "string"
+			},
+			{
+				"indexed": true,
+				"internalType": "address",
+				"name": "from",
+				"type": "address"
+			},
+			{
+				"indexed": true,
+				"internalType": "address",
+				"name": "to",
+				"type": "address"
+			}
+		],
+		"name": "DomainTransferred",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "price3chars",
+				"type": "uint256"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "price4chars",
+				"type": "uint256"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "price5plus",
+				"type": "uint256"
+			}
+		],
+		"name": "PricesUpdated",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": true,
+				"internalType": "string",
+				"name": "domain",
+				"type": "string"
+			},
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "newRecord",
+				"type": "string"
+			}
+		],
+		"name": "RecordUpdated",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": true,
+				"internalType": "address",
+				"name": "to",
+				"type": "address"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "amount",
+				"type": "uint256"
+			}
+		],
+		"name": "Withdrawal",
+		"type": "event"
+	},
+	{
+		"inputs": [],
+		"name": "SUFFIX",
+		"outputs": [
+			{
+				"internalType": "string",
+				"name": "",
+				"type": "string"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "YEAR",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "label",
+				"type": "string"
+			},
+			{
+				"internalType": "uint256",
+				"name": "timeRent",
+				"type": "uint256"
+			}
+		],
+		"name": "calculateFee",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "contractOwner",
+		"outputs": [
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "label",
+				"type": "string"
+			}
+		],
+		"name": "getDomain",
+		"outputs": [
+			{
+				"internalType": "address",
+				"name": "owner",
+				"type": "address"
+			},
+			{
+				"internalType": "string",
+				"name": "record",
+				"type": "string"
+			},
+			{
+				"internalType": "uint256",
+				"name": "registeredAt",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "expiresAt",
+				"type": "uint256"
+			},
+			{
+				"internalType": "bool",
+				"name": "transferLocked",
+				"type": "bool"
+			},
+			{
+				"internalType": "bool",
+				"name": "active",
+				"type": "bool"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "label",
+				"type": "string"
+			}
+		],
+		"name": "getFullName",
+		"outputs": [
+			{
+				"internalType": "string",
+				"name": "",
+				"type": "string"
+			}
+		],
+		"stateMutability": "pure",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "owner",
+				"type": "address"
+			}
+		],
+		"name": "getOwnerDomains",
+		"outputs": [
+			{
+				"internalType": "string[]",
+				"name": "",
+				"type": "string[]"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "label",
+				"type": "string"
+			}
+		],
+		"name": "isAvailable",
+		"outputs": [
+			{
+				"internalType": "bool",
+				"name": "",
+				"type": "bool"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "price3chars",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "price4chars",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "price5plus",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "label",
+				"type": "string"
+			},
+			{
+				"internalType": "string",
+				"name": "record",
+				"type": "string"
+			},
+			{
+				"internalType": "uint256",
+				"name": "timeRent",
+				"type": "uint256"
+			}
+		],
+		"name": "register",
+		"outputs": [],
+		"stateMutability": "payable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "label",
+				"type": "string"
+			}
+		],
+		"name": "release",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "label",
+				"type": "string"
+			},
+			{
+				"internalType": "uint256",
+				"name": "timeRent",
+				"type": "uint256"
+			}
+		],
+		"name": "renew",
+		"outputs": [],
+		"stateMutability": "payable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "uint256",
+				"name": "_price3chars",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "_price4chars",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "_price5plus",
+				"type": "uint256"
+			}
+		],
+		"name": "setPrices",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "label",
+				"type": "string"
+			},
+			{
+				"internalType": "bool",
+				"name": "locked",
+				"type": "bool"
+			}
+		],
+		"name": "setTransferLock",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "label",
+				"type": "string"
+			},
+			{
+				"internalType": "address",
+				"name": "to",
+				"type": "address"
+			}
+		],
+		"name": "transfer",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "label",
+				"type": "string"
+			},
+			{
+				"internalType": "string",
+				"name": "newRecord",
+				"type": "string"
+			}
+		],
+		"name": "updateRecord",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address payable",
+				"name": "to",
+				"type": "address"
+			},
+			{
+				"internalType": "uint256",
+				"name": "amount",
+				"type": "uint256"
+			}
+		],
+		"name": "withdraw",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"stateMutability": "payable",
+		"type": "receive"
+	}
+]]""")
 __SHADOWPAY_ABI__ERC20__ = json.loads("""[
 	{
 		"inputs": [
@@ -881,3 +1521,49 @@ NATIVE_DECIMALS: int = 9
 PROGRAM_ID = Pubkey.from_string("6ZQWADxiM4Vy2ZXxJEZ7DvB8k7FctAXBWKj8z4b3FjMo")
 
 CONFIG_PDA=Pubkey.find_program_address([b"config"], PROGRAM_ID)
+
+
+# ========================= TON Constants =========================
+NANOTON = 1_000_000_000  # 1 TON = 10^9 nanotons
+TON_API_URL = "https://toncenter.com/api/v2"
+TON_TESTNET_API_URL = "https://testnet.toncenter.com/api/v2"
+TON_NATIVE_DECIMALS = 9
+TONSCAN = "https://tonscan.org/"
+
+# TON Jetton (token) standard opcodes
+TON_JETTON_TRANSFER_OP = 0x0F8A7EA5
+TON_JETTON_BURN_OP = 0x595F07BC
+
+# OrbisPaySDK contract addresses on TON (to be filled after deployment)
+__ORBISPAY_CONTRACT_ADDRESS__TON__ = {}
+
+
+# ========================= TRX (Tron) Constants =========================
+SUN_PER_TRX = 1_000_000  # 1 TRX = 10^6 sun
+TRX_NATIVE_DECIMALS = 6
+TRONSCAN = "https://tronscan.org/"
+
+TRX_NETWORKS = {
+    "mainnet": "https://api.trongrid.io",
+    "shasta": "https://api.shasta.trongrid.io",
+    "nile": "https://nile.trongrid.io",
+}
+
+# USDT TRC20 contract address on Tron mainnet
+TRX_USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+
+# OrbisPaySDK contract addresses on Tron (to be filled after deployment)
+__ORBISPAY_CONTRACT_ADDRESS__TRX__ = {}
+
+
+# ========================= Bitcoin Constants =========================
+SATOSHI_PER_BTC = 100_000_000  # 1 BTC = 10^8 satoshi
+BTC_NATIVE_DECIMALS = 8
+
+BTC_EXPLORERS = {
+    "mainnet": "https://blockstream.info/",
+    "testnet": "https://blockstream.info/testnet/",
+}
+
+# Known Bitcoin network fee estimation APIs
+BTC_FEE_API = "https://mempool.space/api/v1/fees/recommended"

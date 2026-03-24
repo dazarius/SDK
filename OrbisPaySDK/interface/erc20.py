@@ -17,9 +17,10 @@ from OrbisPaySDK.const import __ERC20_ABI__
 
 
 class ERC20Token:
-    def __init__(self,  w3: Optional[Web3] = None, explorer: Optional[str] = None, contract = None):
+    def __init__(self, build_tx = False,  w3: Optional[Web3] = None, explorer: Optional[str] = None, contract = None):
         self.web3 = w3
         self.explorer = explorer
+        self.build_tx = build_tx
 
         self.address = None
         self.contract = contract
@@ -61,11 +62,16 @@ class ERC20Token:
             "balance_ui":raw * (10 ** decimals)
         }
         return raw 
-    def metadata(self):
-        symbal = self.get_symbol()
+    def get_metadata(self):
+        symbol = self.get_symbol()
         decimals = self.get_decimals()
+        contract  = self.contract
 
-        
+        return {
+            "symbol": symbol,
+            "decimals": decimals,
+            "token_contract": contract,
+        }
 
     def allowance(self, owner: str, spender: str) -> float:
         self._ensure_contract()
@@ -107,6 +113,8 @@ class ERC20Token:
             'gas': estimated_gas,
             'gasPrice': self.web3.to_wei('5', 'gwei'),
         })
+        if self.build_tx:
+            return txn
 
         signed = self.web3.eth.account.sign_transaction(txn, private_key)
         tx_hash = self.web3.eth.send_raw_transaction(signed.raw_transaction)
@@ -134,6 +142,8 @@ class ERC20Token:
             
             'gasPrice': self.web3.eth.gas_price,
         })
+        if self.build_tx:
+            return txn
         
 
         signed = self.web3.eth.account.sign_transaction(txn, key)
@@ -142,6 +152,38 @@ class ERC20Token:
         if tx_receipt.status != 1:
             raise ValueError(f"aaprove fail.\n {self._format_tx(self.web3.to_hex(tx_hash))}")
         return f"{self._format_tx(self.web3.to_hex(tx_hash))}"
+    def transfer_from(self, private_key: str, from_addr: str, to: str, amount: float, decimals: int = None) -> str:
+        self._ensure_contract()
+        account = self.web3.eth.account.from_key(private_key)
+        if decimals is None:
+            decimals = self.get_decimals()
+        
+        amount = int(amount * (10 ** decimals))
+        
+        estimated_gas = self.contract.functions.transferFrom(
+            Web3.to_checksum_address(from_addr),
+            Web3.to_checksum_address(to),
+            amount
+        ).estimate_gas({
+            'from': account.address,
+            'gasPrice': self.web3.to_wei('5', 'gwei'),
+        })
+        txn = self.contract.functions.transferFrom(
+            Web3.to_checksum_address(from_addr),
+            Web3.to_checksum_address(to),
+            amount
+        ).build_transaction({
+            'from': account.address,
+            'nonce': self.web3.eth.get_transaction_count(account.address),
+            'gas': estimated_gas,
+            'gasPrice': self.web3.to_wei('5', 'gwei'),
+        })
+        if self.build_tx:
+            return txn
+
+        signed = self.web3.eth.account.sign_transaction(txn, private_key)
+        tx_hash = self.web3.eth.send_raw_transaction(signed.raw_transaction)
+        return self._format_tx(self.web3.to_hex(tx_hash))
     
 
 class ERC20TokenMonitr():

@@ -2,6 +2,7 @@ import asyncio
 import solana
 from solana.rpc.async_api import AsyncClient, GetTokenAccountsByOwnerResp
 from solders.transaction import Transaction
+
 from solders.system_program import TransferParams as p
 import spl
 import spl.token
@@ -14,12 +15,12 @@ from solana.rpc.types import TxOpts, TokenAccountOpts
 from solana.rpc.types import TxOpts
 import solders
 from solders.message import Message
-import OrbisPaySDK.const as const
+from OrbisPaySDK.const import __SOL__NATIVE__,WRAPED_SOL
 from typing import List, Dict, Any, Optional
 
 
 # from solders.pubkey import Pubkey
-# from solders.keypair import Keypair
+from solders.keypair import Keypair
 # from solders.signature import Signature
 # from solders.transaction import Transaction
 from spl.token.async_client import AsyncToken
@@ -34,14 +35,20 @@ import pprint
 import httpx
 import base64
 import re
+import base58
 
 
 LAMPORTS_PER_SOL = 1_000_000_000  # 1 SOL = 1,000,000,000 lamports
+coigeco_id = "sol"
+currency_sym = "$"
+
+
+
 
 class SOL:
-    def __init__(self, rpc_url = "https://api.mainnet-beta.solana.com", KEYPAIR: Optional[Union[str, solders.keypair.Keypair]] = None,TOKEN_MINT: Optional[str] = None):
+    def __init__(self, rpc_url = "https://api.mainnet-beta.solana.com", KEYPAIR: Optional[Union[str, solders.keypair.Keypair]] = None,TOKEN_MINT: Optional[str] = None,build_tx:bool = False):
             self.rpc_url = rpc_url
-    
+            self.build_tx = build_tx
             self.client = AsyncClient(rpc_url)
             self.KEYPAIR = None
             self.PROGRAM_ID = TOKEN_PROGRAM_ID # Default to the SPL Token Program ID
@@ -49,6 +56,7 @@ class SOL:
             self.WRAPED_SOL_ID = spl.token.constants.WRAPPED_SOL_MINT
             if KEYPAIR:
                 self.set_keypair(KEYPAIR)
+    
 
     def set_keypair(self, KEYPAIR: Union[str, solders.keypair.Keypair]):
         if isinstance(KEYPAIR, str):
@@ -61,7 +69,7 @@ class SOL:
         else:
             raise ValueError("KEYPAIR must be a Keypair instance or a base58 encoded string.")
 
-    def set_params(self, rpc_url: Optional[str] = None, KEYPAIR: Optional[Union[str, solders.keypair.Keypair]] = None,TOKEN_MINT: Optional[str] = None):
+    def set_params(self, rpc_url: Optional[str] = None, KEYPAIR: Optional[Union[str, solders.keypair.Keypair]] = None,TOKEN_MINT: Optional[str] = None, build_tx = None):
         if rpc_url:
             self.rpc_url = rpc_url
             self.client = AsyncClient(rpc_url)
@@ -69,6 +77,8 @@ class SOL:
             self.set_keypair(KEYPAIR)            
         if TOKEN_MINT:
             self.TOKEN_MINT = TOKEN_MINT
+        if build_tx:
+            self.build_tx = build_tx
 
     def get_pubkey(self, returnString: Optional[bool] = None):
 
@@ -83,16 +93,26 @@ class SOL:
         raise ValueError("Keypair not set")
 
     def gen_wallet(self):
-        return solders.keypair.Keypair()
+        acc = solders.keypair.Keypair()
+        return {
+            "private_key": base58.b58encode(bytes(acc)).decode("utf-8"),
+            "public_key": str(acc.pubkey())
+        }
     async def get_balance(self):
         resp = await self.client.get_balance(self.get_pubkey())
         lamports = resp.value
         sol_balance = lamports / LAMPORTS_PER_SOL
-        return sol_balance  
+        return {
+            "balance": sol_balance,
+            "ui_balance": sol_balance,
+            "string_ui_balance": f"{sol_balance:.9f}",
+            "raw_balance": lamports,
+        }  
     async def get_token_accounts_by_owner(self,owner_pubkey: Optional[str] = None):
         if not owner_pubkey:
             print("No owner pubkey provided, using the wallet's pubkey.")
             owner_pubkey = self.get_pubkey(returnString=True)
+        
         headers = {
             "Content-Type": "application/json",
         }
@@ -115,16 +135,34 @@ class SOL:
             token_data = {}
             for acc in accounts:
                 parsed = acc["account"]["data"]["parsed"]["info"]
+                tokenAmount = parsed["tokenAmount"]
                 mint = parsed["mint"]
+                metadata = await self.fetch_metadata_raw(mint)
+
                 ui_amount = parsed["tokenAmount"]["uiAmount"]
-                token_data[mint] = {"amount": ui_amount}
+                token_data[mint] = {
+                    "ui_balance": ui_amount,
+                    "raw_balance": tokenAmount["amount"], 
+                    "string_ui_balance": tokenAmount["uiAmountString"],
+                    "fullData": acc,
+                    "metadata": metadata
+                    }
 
             
 
             return token_data
-
-    async def fetch_metadata_raw(self,mint_address: str):
-        METADATA_PROGRAM_ID = solders.pubkey.Pubkey.from_string("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")
+    async def get_token_balance(self, data:dict):
+        owner_pubkey:list = data.get("owner_pubkeys")
+        tokens:list = data.get("tokens")
+        if not owner_pubkey or not tokens:
+            print("No owner pubkey or token list provided, using the wallet's pubkey.")
+        for owner in owner_pubkey:
+            pass
+        pass
+    async def fetch_metadata_raw(self, mint_address: str):
+        METADATA_PROGRAM_ID = solders.pubkey.Pubkey.from_string(
+            "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
+        )
         mint = solders.pubkey.Pubkey.from_string(mint_address)
         seeds = [
             b"metadata",
@@ -137,28 +175,51 @@ class SOL:
             "jsonrpc": "2.0",
             "id": 1,
             "method": "getAccountInfo",
-            "params": [
-                str(pda),
-                {"encoding": "base64"}
-            ]
+            "params": [str(pda), {"encoding": "base64"}]
         }
 
         async with httpx.AsyncClient() as client:
             r = await client.post(self.rpc_url, json=payload)
             data = r.json()
 
-        if not data["result"]["value"]:
+     
+
+        result = data.get("result", {})
+        if not result or not result.get("value"):
             return None
 
-        b64_data = data["result"]["value"]["data"][0]
+        b64_data = result["value"]["data"][0]
         raw_bytes = base64.b64decode(b64_data)
 
-        name = raw_bytes[1+32+32 : 1+32+32+32].decode("utf-8").rstrip("\x00")
-        name = re.sub(r'[^\x20-\x7E]', '', name)     
+
+        # Metaplex metadata layout:
+        # [0]      = discriminator (1 byte)
+        # [1:33]   = update authority (32 bytes)
+        # [33:65]  = mint (32 bytes)
+        # [65:69]  = name length (4 bytes, little-endian u32)
+        # [69:...]  = name string
+
+        offset = 65
+
+        name_len = int.from_bytes(raw_bytes[offset:offset+4], "little")
+        offset += 4
+        name = raw_bytes[offset:offset+name_len].decode("utf-8", errors="ignore").rstrip("\x00")
+        offset += name_len
+
+        symbol_len = int.from_bytes(raw_bytes[offset:offset+4], "little")
+        offset += 4
+        symbol = raw_bytes[offset:offset+symbol_len].decode("utf-8", errors="ignore").rstrip("\x00")
+        offset += symbol_len
+
+        uri_len = int.from_bytes(raw_bytes[offset:offset+4], "little")
+        offset += 4
+        uri = raw_bytes[offset:offset+uri_len].decode("utf-8", errors="ignore").rstrip("\x00")
+
         return {
             "mint": mint_address,
-            "name": name,
-
+            "name": name.strip(),
+            "symbol": symbol.strip(),
+            "uri": uri.strip(),  
         }
     async def transfer_token(self, to: str, amount: float):
        
@@ -198,6 +259,8 @@ class SOL:
         )
 
         tx.add(transfer(params))
+        if self.build_tx:
+            return tx
 
         resp = await self.client.send_transaction(tx, self.KEYPAIR, opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed))
         return resp.value
@@ -221,6 +284,8 @@ class SOL:
 
         blockhash_str = latest_blockhash_resp.value.blockhash
         tx = Transaction([self.KEYPAIR], msg, blockhash_str)
+        if self.build_tx:
+            return tx
         resp =  await self.client.send_transaction(tx)
         return resp.value
     async def build_transaction(self,data):
@@ -232,8 +297,8 @@ class SOL:
         
                 
         tx = Transaction()
-        if data["_token"] == const.__SOL__MINT__:
-            lamports = int(_amount * const.LAMPORTS_PER_SOL)
+        if data["_token"] == __SOL__NATIVE__:
+            lamports = int(_amount * LAMPORTS_PER_SOL)
             instruction = transfer(
                 TransferParams(
                     from_pubkey=_from,
@@ -248,90 +313,233 @@ class SOL:
             "tx": tx.to_solders().to_bytes().hex(),
             "recent_blockhash": str(recent_blockhash),
         }
-    async def sign_and_send_json(
-        self,
-        json_payload: Dict[str, Any],
-        secret_key_bytes: bytes,
-        rpc_url: str,
-        wait_for_confirmation: bool = True,
-        timeout: int = 60
-    ) -> Dict[str, Any]:
+    async def _send_tx(self, tx, key: str = None):
         """
-        Wallet-side: sign JSON-built transaction and send it.
-        - json_payload: dict created by build_tx_json / build_tx_json_transfer
-        - secret_key_bytes: 64-byte or 32-byte secret key for Keypair.from_secret_key
-        - rpc_url: RPC to send transaction
-        Returns dict: {"tx_sig": "...", "status": "sent"} or raises
+        Аналог EVM sign_and_send для Solana.
+        tx может быть объектом Transaction или Message.
         """
-        client = self.client
+        try:
+            # 1. Подготовка ключа (Keypair)
+            # Если ключ передан как строка Base58, конвертим его в Keypair
+            if key:
+                from solders.keypair import Keypair
+                signer = Keypair.from_base58_string(key)
+            else:
+                signer = self.KEYPAIR # Берем дефолтный из класса
 
-        # Build TransactionMessage
-        message = _build_transaction_message_from_json(json_payload)
+            if not signer:
+                raise ValueError("No keypair provided for signing")
 
-        # serialize message and sign it with Keypair
-        kp = Keypair.from_secret_key(secret_key_bytes)
+            # 2. Подпись транзакции
+            # В Solana Transaction(signatures, message, blockhash)
+            # Если tx пришел как готовый объект, мы просто добавляем подпись
+            if hasattr(tx, 'message'):
+                # Собираем финальную транзу с подписью
+                from solders.transaction import Transaction
+                final_tx = Transaction([signer], tx.message, tx.recent_blockhash)
+            else:
+                # Если tx это список инструкций (ixns), нужно сначала собрать Transaction
+                # Но лучше передавать уже собранный объект Transaction из build_tx
+                raise ValueError("tx must be a Transaction object with message and blockhash")
 
-        serialized_msg = message.serialize()
-        # Keypair.sign expects bytes and returns Signature object or bytes depending on solana-py version
-        signature_obj = kp.sign(serialized_msg)
-        # normalize signature bytes
-        if isinstance(signature_obj, (bytes, bytearray)):
-            sig_bytes = bytes(signature_obj)
-        else:
-            # many versions return an object with .signature attribute
-            sig_bytes = getattr(signature_obj, "signature", None)
-            if sig_bytes is None:
-                # fallback: try to call .to_bytes() or similar
-                try:
-                    sig_bytes = bytes(signature_obj)
-                except Exception:
-                    raise RuntimeError("Failed to extract signature bytes from Keypair.sign result")
+            # 3. Отправка (аналог send_raw_transaction)
+            # send_transaction сам делает serialize() под капотом
+            resp = await self.client.send_transaction(final_tx)
+            tx_hash = str(resp.value) # Это сигнатура (хеш)
 
-        # assemble VersionedTransaction
-        vt = VersionedTransaction(message=message, signatures=[sig_bytes])
-        raw = vt.serialize()
+            # 4. Ожидание подтверждения (аналог wait_for_transaction_receipt)
+            # В Solana используем confirm_transaction
+            confirm = await self.client.confirm_transaction(resp.value)
+            
+            if not confirm.value:
+                return False
 
-        # send
-        resp = client.send_raw_transaction(raw)
-        # resp usually contains tx signature (string) or error
-        # solana-py returns the tx sig as e.g. {'result': '...'} or directly string depending on version,
-        # so attempt to extract:
-        tx_sig = None
-        if isinstance(resp, dict):
-            # typical shape: {"result": "5xxx...", ...}
-            tx_sig = resp.get("result") or resp.get("transaction") or resp.get("tx")
-            # if nested
-            if isinstance(tx_sig, dict):
-                tx_sig = tx_sig.get("transaction") or tx_sig.get("signature")
-        else:
-            tx_sig = resp
+            # 5. Возвращаем результат в твоем формате
+            # tx_to_human_view для соланы напишем ниже, если нужно
+            return {
+                "tx": tx_hash,
+                "meta": {
+                    "symbol": "SOL",
+                    "status": "Success",
+                    "signature": tx_hash
+                }
+            }
 
-        if not tx_sig:
-            # raising with full resp for debug
-            raise RuntimeError(f"send_raw_transaction returned unexpected response: {resp}")
+        except Exception as e:
+            return False
+    async def  _parse_transaction(self, signature: str) -> dict:
+    
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTransaction",
+            "params": [
+                signature,
+                {
+                    "encoding": "jsonParsed",
+                    "maxSupportedTransactionVersion": 0,
+                    "commitment": "confirmed",
+                }
+            ]
+        }
 
-        result = {"tx_sig": tx_sig, "status": "sent"}
+        async with httpx.AsyncClient() as client:
+            r = await client.post(self.rpc_url, json=payload, timeout=15)
+            data = r.json()
 
-        if wait_for_confirmation:
-            # wait for receipt/confirmation
-            # use confirm_transaction or get_confirmed_transaction (APIs vary)
-            # We'll poll for get_confirmed_transaction/get_transaction
-            import time
-            start = time.time()
-            while time.time() - start < timeout:
-                # try v1 get_confirmed
-                try:
-                    info = client.get_transaction(tx_sig)
-                except Exception:
-                    info = client.get_confirmed_transaction(tx_sig) if hasattr(client, "get_confirmed_transaction") else None
-                if info and ( (isinstance(info, dict) and info.get("result")) or info is not None):
-                    result["status"] = "confirmed"
-                    result["receipt"] = info
-                    return result
-                time.sleep(1)
-            # timeout
-            result["status"] = "pending"
+        tx = data.get("result")
+        if not tx:
+            return {"error": "Transaction not found", "signature": signature}
+
+        meta       = tx.get("meta", {}) or {}
+        message    = tx.get("transaction", {}).get("message", {})
+        block_time = tx.get("blockTime")
+        fee        = meta.get("fee", 0)
+        err        = meta.get("err")
+
+        # Аккаунты
+        account_keys = [
+            acc.get("pubkey") if isinstance(acc, dict) else acc
+            for acc in message.get("accountKeys", [])
+        ]
+
+        result = {
+            "signature":   signature,
+            "status":      "failed" if err else "success",
+            "error":       err,
+            "slot":        tx.get("slot"),
+            "timestamp":   block_time,
+            "fee_lamports": fee,
+            "fee_sol":     fee / LAMPORTS_PER_SOL,
+            "transfers":   [],
+            "token_transfers": [],
+            "programs":    [],
+            "tx_type":     "unknown",
+        }
+
+        # SOL балансы
+        pre_balances  = meta.get("preBalances", [])
+        post_balances = meta.get("postBalances", [])
+        for i, (pre, post) in enumerate(zip(pre_balances, post_balances)):
+            diff = post - pre
+            if diff != 0 and i < len(account_keys):
+                result["transfers"].append({
+                    "account":        account_keys[i],
+                    "change_lamports": diff,
+                    "change_sol":     diff / LAMPORTS_PER_SOL,
+                    "direction":      "in" if diff > 0 else "out",
+                })
+
+        pre_token  = meta.get("preTokenBalances",  []) or []
+        post_token = meta.get("postTokenBalances", []) or []
+        post_token_map = {t["accountIndex"]: t for t in post_token}
+
+        for pre in pre_token:
+            idx         = pre["accountIndex"]
+            post        = post_token_map.get(idx, {})
+            pre_amount  = float(pre.get("uiTokenAmount", {}).get("uiAmount") or 0)
+            post_amount = float(post.get("uiTokenAmount", {}).get("uiAmount") or 0)
+            diff        = post_amount - pre_amount
+
+            if diff != 0:
+                result["token_transfers"].append({
+                    "account":   account_keys[idx] if idx < len(account_keys) else "unknown",
+                    "mint":      pre.get("mint"),
+                    "owner":     pre.get("owner"),
+                    "change":    diff,
+                    "direction": "in" if diff > 0 else "out",
+                    "decimals":  pre.get("uiTokenAmount", {}).get("decimals"),
+                })
+
+        for ix in message.get("instructions", []):
+            program = ix.get("program") or ix.get("programId")
+            parsed  = ix.get("parsed")
+            prog_info = {"program": program}
+            if parsed:
+                prog_info["type"] = parsed.get("type")
+                prog_info["info"] = parsed.get("info")
+            result["programs"].append(prog_info)
+
+        # Тип транзакции
+        programs = [p.get("program") for p in result["programs"]]
+        types    = [p.get("type")    for p in result["programs"]]
+
+        if "spl-token" in programs and any(t in types for t in ("transfer", "transferChecked")):
+            result["tx_type"] = "token_transfer"
+        elif any(p in programs for p in ("Jupiter", "jupiterAggregator")):
+            result["tx_type"] = "swap"
+        elif result["transfers"] and not result["token_transfers"]:
+            result["tx_type"] = "sol_transfer"
+        elif result["token_transfers"]:
+            result["tx_type"] = "swap"
+
         return result
 
+    async def get_transactions(self, limit: int = 10, before: str = None) -> list[dict]:
+       
+        # 1. Получаем сигнатуры
+        params = [str(self.get_pubkey()), {"limit": limit}]
+        if before:
+            params[1]["before"] = before
 
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getSignaturesForAddress",
+            "params": params,
+        }
+
+        async with httpx.AsyncClient() as client:
+            r = await client.post(self.rpc_url, json=payload, timeout=15)
+            data = r.json()
+
+        signatures = [s["signature"] for s in (data.get("result") or [])]
+
+        # 2. Парсим каждую параллельно
+        import asyncio
+        tasks = [self._parse_transaction(sig) for sig in signatures]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        return [
+            r if not isinstance(r, Exception) else {"error": str(r)}
+            for r in results
+        ]
+
+
+
+# if __name__ == "__main__":
+#     s = SOL()
+#     instruction = [Instruction(
+#     Instruction {
+#         program_id: 11111111111111111111111111111111,
+#         accounts: [
+#             AccountMeta {
+#                 pubkey: C3MhUqKFRkkTRBRZcH7EKoD8c1iose9T3tPb7qiytzxs,
+#                 is_signer: true,
+#                 is_writable: true,
+#             },
+#             AccountMeta {
+#                 pubkey: C3MhUqKFRkkTRBRZcH7EKoD8c1iose9T3tPb7qiytzxs,
+#                 is_signer: false,
+#                 is_writable: true,
+#             },
+#         ],
+#         data: [
+#             2,
+#             0,
+#             0,
+#             0,
+#             0,
+#             225,
+#             245,
+#             5,
+#             0,
+#             0,
+#             0,
+#             0,
+#         ],
+#     },
+# )]
+
+#     run = s.sign_and_send()
 

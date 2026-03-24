@@ -1,10 +1,13 @@
-from OrbisPaySDK.const import __SOL__MINT__,LAMPORTS_PER_SOL
+import solders
+import httpx
+from OrbisPaySDK.const import LAMPORTS_PER_SOL
 from OrbisPaySDK.interface import (erc20, erc721, sol)
 from OrbisPaySDK.types import EVMcheque, SOLcheque
 from web3 import Web3
 import dataclasses
 from dataclasses import dataclass
-from typing import Union
+from typing import Union, Optional, Dict, List
+import base58
 
 
 
@@ -41,7 +44,13 @@ class Chaque:
     
 
 
+class _SOLhelper():
+    def __init__(self, client = None):
+        self.client = client
 
+    def converted_secret_to_private_key(self, private_key: str) -> str:
+        return base58.b58decode(private_key).hex()
+    
 
 def extractedParamsChain(data):
     for key in data["chains"]:
@@ -103,22 +112,485 @@ def _format_tx(explorer,tx_hash: str) -> str:
 
 
 
-if __name__ == "__main__":
-    c = extractParamsForTransfer(data={
-        "transferParams":{
-            "bc":"EVM",
-            "to":["fdcas"],
-            "from_":"sca",
-            "token":"afs",
-            "amount_ui":"{:.18f}".format(0.000000000005).rstrip("0").rstrip("."),
-            "amount":Web3.to_wei(0.000000000005, "ether"),
-            "contract":"ads"
-        },
-        "chains":{
-            "name":"data",
-            "rpc":"adsf"
+# ========================= Price providers =========================
 
-        }        
-    })
-    d = extractParamsForCheque(c)
-    print(d.baseTranserParam)
+import asyncio as _aio
+from typing import Any
+
+
+class _BaseProvider:
+    """Shared HTTP logic with retry / rate-limit handling."""
+
+    _RETRIES = 3
+
+    def __init__(self, base_url: str, headers: Optional[Dict[str, str]] = None):
+        self._base_url = base_url.rstrip("/")
+        self._headers = headers or {}
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        params: Optional[dict] = None,
+    ) -> Any:
+        url = f"{self._base_url}{path}"
+        for attempt in range(self._RETRIES):
+            async with httpx.AsyncClient(timeout=15) as client:
+                resp = await client.request(
+                    method, url, params=params, headers=self._headers,
+                )
+                if resp.status_code == 429:
+                    if attempt < self._RETRIES - 1:
+                        await _aio.sleep(2 ** attempt)
+                        continue
+                    return None
+                resp.raise_for_status()
+                return resp.json()
+        return None
+
+    async def _get(self, path: str, params: Optional[dict] = None) -> Any:
+        return await self._request("GET", path, params)
+
+
+# ---------------------------------------------------------------------------
+#  CoinGecko
+# ---------------------------------------------------------------------------
+
+class CoinGecko(_BaseProvider):
+    """
+    CoinGecko price provider.
+
+    Free tier — no API key required (rate-limit ~30 req/min).
+    Pro tier  — pass *api_key* for higher limits.
+
+    Example::
+
+        cg = CoinGecko()
+        prices = await cg.get_prices()                # all 6 tokens in USD
+        sol    = await cg.get_price("sol", "eur")     # single token in EUR
+        info   = await cg.get_coin_info("bitcoin")    # full coin metadata
+        res    = await cg.search("ton")               # search coins
+    """
+
+    COIN_ID_MAP: Dict[str, str] = {
+        "btc": "bitcoin", "bitcoin": "bitcoin",
+        "eth": "ethereum", "evm": "ethereum", "ethereum": "ethereum",
+        "bnb": "binancecoin", "bsc": "binancecoin", "binancecoin": "binancecoin",
+        "sol": "solana", "solana": "solana",
+        "trx": "tron", "tron": "tron",
+        "ton": "the-open-network", "the-open-network": "the-open-network",
+    }
+    DEFAULT_COINS = ["bitcoin", "ethereum", "binancecoin", "solana", "tron", "the-open-network"]
+    SYMBOL_MAP: Dict[str, str] = {
+        "bitcoin": "btc", "ethereum": "eth", "binancecoin": "bnb", "solana": "sol",
+        "tron": "trx", "the-open-network": "ton",
+    }
+
+    def __init__(self, api_key: Optional[str] = None):
+        if api_key:
+            base = "https://pro-api.coingecko.com/api/v3"
+            headers = {"x-cg-pro-api-key": api_key}
+        else:
+            base = "https://api.coingecko.com/api/v3"
+            headers = {}
+        super().__init__(base, headers)
+
+    def _resolve_ids(self, coins: Optional[List[str]] = None) -> List[str]:
+        if not coins:
+            return list(self.DEFAULT_COINS)
+        ids = []
+        for c in coins:
+            cg_id = self.COIN_ID_MAP.get(c.lower())
+            if not cg_id:
+                raise ValueError(
+                    f"Unknown coin '{c}'. Supported: {list(self.COIN_ID_MAP.keys())}"
+                )
+            ids.append(cg_id)
+        return ids
+
+    async def get_prices(
+        self,
+        coins: Optional[List[str]] = None,
+        vs_currency: str = "usd",
+    ) -> Dict[str, float]:
+        """
+        Fetch prices for native tokens.
+
+        Args:
+            coins: List of aliases (``btc``, ``eth``, ``bnb``, ``sol``, ``trx``, ``ton``).
+                   ``None`` — all six.
+            vs_currency: Fiat code (``usd``, ``eur``, ``rub``, …).
+
+        Returns:
+            ``{"btc": 97000.0, "eth": 2600.0, "bnb": 600.0, ...}``
+        """
+        cg_ids = self._resolve_ids(coins)
+        vs = vs_currency.lower()
+        data = await self._get(
+            "/simple/price",
+            params={"ids": ",".join(sorted(set(cg_ids))), "vs_currencies": vs},
+        ) or {}
+        result: Dict[str, float] = {}
+        for cg_id in cg_ids:
+            sym = self.SYMBOL_MAP.get(cg_id, cg_id)
+            result[sym] = float((data.get(cg_id) or {}).get(vs, 0))
+        return result
+
+    async def get_price(self, coin: str, vs_currency: str = "usd") -> float:
+        """Get the price of a single token. Returns ``0.0`` if unavailable."""
+        prices = await self.get_prices(coins=[coin], vs_currency=vs_currency)
+        cg_id = self.COIN_ID_MAP.get(coin.lower(), coin.lower())
+        sym = self.SYMBOL_MAP.get(cg_id, cg_id)
+        return prices.get(sym, 0.0)
+
+    async def get_coin_info(self, coin: str) -> Optional[dict]:
+        """
+        Full coin metadata (description, links, market data, …).
+
+        *coin* can be an alias (``btc``) or CoinGecko ID (``bitcoin``).
+        """
+        cg_id = self.COIN_ID_MAP.get(coin.lower(), coin.lower())
+        return await self._get(f"/coins/{cg_id}")
+
+    async def search(self, query: str) -> list:
+        """Search coins, categories, exchanges by keyword."""
+        data = await self._get("/search", params={"query": query}) or {}
+        return data.get("coins", [])
+
+    async def get_market_chart(
+        self,
+        coin: str,
+        days: int = 7,
+        vs_currency: str = "usd",
+    ) -> Optional[dict]:
+        """
+        Price / market-cap / volume chart data.
+
+        Args:
+            coin: Alias or CoinGecko ID.
+            days: Number of days (1, 7, 30, 90, 365, ``max``).
+            vs_currency: Fiat code.
+
+        Returns:
+            ``{"prices": [[ts, price], ...], "market_caps": [...], "total_volumes": [...]}``
+        """
+        cg_id = self.COIN_ID_MAP.get(coin.lower(), coin.lower())
+        return await self._get(
+            f"/coins/{cg_id}/market_chart",
+            params={"vs_currency": vs_currency.lower(), "days": str(days)},
+        )
+
+
+# ---------------------------------------------------------------------------
+#  CoinMarketCap
+# ---------------------------------------------------------------------------
+
+class CoinMarketCap(_BaseProvider):
+    """
+    CoinMarketCap price provider (requires free API key).
+
+    Get a key at https://pro.coinmarketcap.com
+
+    Example::
+
+        cmc = CoinMarketCap(api_key="your-key")
+        prices = await cmc.get_prices()                     # all 6 in USD
+        sol    = await cmc.get_price("sol", "EUR")          # single token
+        top    = await cmc.get_listings(limit=20)           # top 20 by mcap
+        info   = await cmc.get_coin_info("BTC")             # metadata
+    """
+
+    SYMBOL_MAP: Dict[str, str] = {
+        "btc": "BTC", "bitcoin": "BTC",
+        "eth": "ETH", "evm": "ETH", "ethereum": "ETH",
+        "bnb": "BNB", "bsc": "BNB", "binancecoin": "BNB",
+        "sol": "SOL", "solana": "SOL",
+        "trx": "TRX", "tron": "TRX",
+        "ton": "TON", "the-open-network": "TON",
+    }
+    DEFAULT_SYMBOLS = ["BTC", "ETH", "BNB", "SOL", "TRX", "TON"]
+
+    def __init__(self, api_key: str):
+        super().__init__(
+            "https://pro-api.coinmarketcap.com",
+            headers={"X-CMC_PRO_API_KEY": api_key, "Accept": "application/json"},
+        )
+
+    def _resolve_symbols(self, coins: Optional[List[str]] = None) -> List[str]:
+        if not coins:
+            return list(self.DEFAULT_SYMBOLS)
+        syms = []
+        for c in coins:
+            s = self.SYMBOL_MAP.get(c.lower(), c.upper())
+            syms.append(s)
+        return syms
+
+    async def get_prices(
+        self,
+        coins: Optional[List[str]] = None,
+        vs_currency: str = "USD",
+    ) -> Dict[str, float]:
+        """
+        Fetch latest prices.
+
+        Args:
+            coins: List of aliases (``btc``, ``eth``, ``bnb``, ``sol``, ``trx``, ``ton``).
+            vs_currency: Fiat code (``USD``, ``EUR``, …).
+
+        Returns:
+            ``{"btc": 97000.0, "eth": 2600.0, "bnb": 600.0, ...}``
+        """
+        symbols = self._resolve_symbols(coins)
+        data = await self._get(
+            "/v2/cryptocurrency/quotes/latest",
+            params={"symbol": ",".join(symbols), "convert": vs_currency.upper()},
+        )
+        if not data:
+            return {s.lower(): 0.0 for s in symbols}
+
+        result: Dict[str, float] = {}
+        quotes = data.get("data", {})
+        for sym in symbols:
+            entries = quotes.get(sym, [])
+            if isinstance(entries, list) and entries:
+                entry = entries[0]
+            elif isinstance(entries, dict):
+                entry = entries
+            else:
+                result[sym.lower()] = 0.0
+                continue
+            price = (
+                entry.get("quote", {})
+                .get(vs_currency.upper(), {})
+                .get("price", 0)
+            )
+            result[sym.lower()] = float(price) if price else 0.0
+        return result
+
+    async def get_price(self, coin: str, vs_currency: str = "USD") -> float:
+        """Get the price of a single token."""
+        prices = await self.get_prices(coins=[coin], vs_currency=vs_currency)
+        sym = self.SYMBOL_MAP.get(coin.lower(), coin.upper()).lower()
+        return prices.get(sym, 0.0)
+
+    async def get_listings(
+        self,
+        limit: int = 100,
+        vs_currency: str = "USD",
+    ) -> list:
+        """
+        Top cryptocurrencies by market cap.
+
+        Returns:
+            List of dicts with ``name``, ``symbol``, ``price``, ``market_cap``, etc.
+        """
+        data = await self._get(
+            "/v1/cryptocurrency/listings/latest",
+            params={"limit": str(limit), "convert": vs_currency.upper()},
+        )
+        if not data:
+            return []
+        raw = data.get("data", [])
+        result = []
+        for item in raw:
+            q = item.get("quote", {}).get(vs_currency.upper(), {})
+            result.append({
+                "symbol": item.get("symbol", ""),
+                "name": item.get("name", ""),
+                "price": q.get("price", 0),
+                "market_cap": q.get("market_cap", 0),
+                "volume_24h": q.get("volume_24h", 0),
+                "percent_change_24h": q.get("percent_change_24h", 0),
+                "percent_change_7d": q.get("percent_change_7d", 0),
+            })
+        return result
+
+    async def get_coin_info(self, coin: str) -> Optional[dict]:
+        """
+        Coin metadata (logo, description, urls, …).
+
+        *coin* can be an alias (``btc``) or raw symbol (``BTC``).
+        """
+        sym = self.SYMBOL_MAP.get(coin.lower(), coin.upper())
+        data = await self._get(
+            "/v2/cryptocurrency/info",
+            params={"symbol": sym},
+        )
+        if not data:
+            return None
+        entries = data.get("data", {}).get(sym, [])
+        if isinstance(entries, list) and entries:
+            return entries[0]
+        if isinstance(entries, dict):
+            return entries
+        return None
+
+
+# ---------------------------------------------------------------------------
+#  DexScreener
+# ---------------------------------------------------------------------------
+
+class DexScreener(_BaseProvider):
+    """
+    DexScreener DEX aggregator (free, no API key).
+
+    Example::
+
+        ds = DexScreener()
+        pairs = await ds.search("SOL/USDC")
+        token = await ds.get_tokens("solana", "So111...112")
+        pools = await ds.get_token_pools("solana", "So111...112")
+        price = await ds.get_token_price("solana", "So111...112")
+        pair  = await ds.get_pair("solana", "JUPyi...")
+    """
+
+    # Common chain IDs used in DexScreener
+    CHAINS = {
+        "ethereum": "ethereum",
+        "eth": "ethereum",
+        "evm": "ethereum",
+        "bsc": "bsc",
+        "solana": "solana",
+        "sol": "solana",
+        "tron": "tron",
+        "trx": "tron",
+        "ton": "ton",
+        "base": "base",
+        "arbitrum": "arbitrum",
+        "polygon": "polygon",
+        "avalanche": "avalanche",
+    }
+
+    def __init__(self):
+        super().__init__("https://api.dexscreener.com")
+
+    def _chain(self, chain_id: str) -> str:
+        return self.CHAINS.get(chain_id.lower(), chain_id.lower())
+
+    async def search(self, query: str) -> list:
+        """
+        Search pairs by token name, symbol, or address.
+
+        Args:
+            query: Search string (e.g. ``"SOL/USDC"``, ``"PEPE"``, token address).
+
+        Returns:
+            List of pair dicts with ``priceUsd``, ``volume``, ``liquidity``, etc.
+        """
+        data = await self._get("/latest/dex/search", params={"q": query})
+        if not data:
+            return []
+        return data.get("pairs", [])
+
+    async def get_pair(self, chain_id: str, pair_address: str) -> Optional[dict]:
+        """
+        Get a specific pair by chain and pair address.
+
+        Args:
+            chain_id: Chain alias (``solana``, ``ethereum``, ``bsc``, …).
+            pair_address: DEX pair / pool address.
+        """
+        chain = self._chain(chain_id)
+        data = await self._get(f"/latest/dex/pairs/{chain}/{pair_address}")
+        if not data:
+            return None
+        pairs = data.get("pairs", [])
+        return pairs[0] if pairs else None
+
+    async def get_tokens(
+        self,
+        chain_id: str,
+        token_addresses: str,
+    ) -> list:
+        """
+        Get pairs for one or multiple token addresses (up to 30, comma-separated).
+
+        Args:
+            chain_id: Chain alias (``solana``, ``ethereum``, …).
+            token_addresses: One or comma-separated token addresses.
+
+        Returns:
+            List of pair dicts.
+        """
+        chain = self._chain(chain_id)
+        data = await self._get(f"/tokens/v1/{chain}/{token_addresses}")
+        if isinstance(data, list):
+            return data
+        return []
+
+    async def get_token_pools(
+        self,
+        chain_id: str,
+        token_address: str,
+    ) -> list:
+        """
+        Get all liquidity pools for a token.
+
+        Args:
+            chain_id: Chain alias.
+            token_address: Token contract address.
+
+        Returns:
+            List of pool/pair dicts.
+        """
+        chain = self._chain(chain_id)
+        data = await self._get(f"/token-pairs/v1/{chain}/{token_address}")
+        if isinstance(data, list):
+            return data
+        return []
+
+    async def get_token_price(
+        self,
+        chain_id: str,
+        token_address: str,
+    ) -> float:
+        """
+        Convenience: get USD price for a token from its highest-liquidity pair.
+
+        Returns:
+            Price in USD as float, or ``0.0`` if not found.
+        """
+        pairs = await self.get_tokens(chain_id, token_address)
+        if not pairs:
+            return 0.0
+        # Pick the pair with the most liquidity
+        best = max(
+            pairs,
+            key=lambda p: (p.get("liquidity") or {}).get("usd", 0),
+            default=None,
+        )
+        if best and best.get("priceUsd"):
+            return float(best["priceUsd"])
+        return 0.0
+
+    async def get_top_boosts(self) -> list:
+        """Get tokens with most active boosts."""
+        data = await self._get("/token-boosts/top/v1")
+        if isinstance(data, list):
+            return data
+        return []
+
+
+# ---------------------------------------------------------------------------
+#  Backward-compatible module-level functions
+# ---------------------------------------------------------------------------
+
+_default_cg = CoinGecko()
+
+
+async def get_native_prices(
+    vs_currency: str = "usd",
+    coins: Optional[List[str]] = None, 
+) -> Dict[str, float]:
+    """Shortcut: ``CoinGecko().get_prices(coins, vs_currency)``."""
+    return await _default_cg.get_prices(coins=coins, vs_currency=vs_currency)
+
+
+async def get_native_price(
+    coin: str,
+    vs_currency: str = "usd",
+) -> float:
+    """Shortcut: ``CoinGecko().get_price(coin, vs_currency)``."""
+    return await _default_cg.get_price(coin=coin, vs_currency=vs_currency)
+
+

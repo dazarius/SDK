@@ -65,7 +65,7 @@ class ERC721Token:
         tx_hash = self.web3.eth.send_raw_transaction(signed.rawTransaction)
         return self.web3.to_hex(tx_hash)
 class ERC721TokenMonitor():
-    def __init__(self, wss_url, rpc_url = None, network_name = None, tokens:list = None, on_transfer_callback:callable=None,get_token_data = False, show_debug:bool=False, addresses:list = None, metadata:Dict[str, Any] = None):
+    def __init__(self, wss_url, rpc_url = None, network_name = None, tokens:list = None, on_transfer_callback:callable=None,get_token_data = False, show_debug:bool=False, addresses:list = None, metadata:dict = None):
         self.get_token_data = get_token_data
         self.show_debug = show_debug
         self.wss_url = wss_url
