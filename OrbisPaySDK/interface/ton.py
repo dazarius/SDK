@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import base64
 from datetime import datetime, timezone
@@ -171,6 +172,32 @@ class TON:
                     }
 
             raise ValueError(f"Failed to get balance: {data}")
+
+    async def get_balance_batch(self, address_list: list) -> dict:
+        """
+        Get TON balances for multiple addresses in parallel.
+
+        Returns:
+            dict {address: {"symbol": "TON", "decimals": 9, "balance": float, "raw_balance": int}}
+        """
+        async def fetch(address):
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(
+                        f"{self.api_url}/getAddressBalance",
+                        params={"address": address},
+                        headers=self._get_headers(),
+                    )
+                    data = resp.json()
+                    if data.get("ok"):
+                        raw = int(data["result"])
+                        return address, {"symbol": "TON", "decimals": DECIMALS, "balance": raw / NANOTON, "raw_balance": raw}
+            except Exception:
+                pass
+            return address, {"symbol": "TON", "decimals": DECIMALS, "balance": 0.0, "raw_balance": 0}
+
+        results = await asyncio.gather(*[fetch(addr) for addr in address_list])
+        return dict(results)
 
     async def get_wallet_info(self, address: Optional[str] = None) -> dict:
         """Get detailed wallet information (balance, seqno, state, etc.)."""

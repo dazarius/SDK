@@ -108,6 +108,27 @@ class SOL:
             "string_ui_balance": f"{sol_balance:.9f}",
             "raw_balance": lamports,
         }  
+    async def get_balance_batch(self, address_list: list) -> dict:
+        """
+        Get SOL balances for multiple addresses in parallel.
+
+        Returns:
+            dict {address: {"balance": float, "raw_balance": int}}
+        """
+        from solders.pubkey import Pubkey
+
+        async def fetch(addr):
+            try:
+                pubkey = Pubkey.from_string(addr)
+                resp = await self.client.get_balance(pubkey)
+                lamports = resp.value
+                return addr, {"balance": lamports / LAMPORTS_PER_SOL, "raw_balance": lamports}
+            except Exception:
+                return addr, {"balance": 0.0, "raw_balance": 0}
+
+        results = await asyncio.gather(*[fetch(addr) for addr in address_list])
+        return dict(results)
+
     async def get_token_accounts_by_owner(self,owner_pubkey: Optional[str] = None):
         if not owner_pubkey:
             print("No owner pubkey provided, using the wallet's pubkey.")

@@ -162,6 +162,30 @@ class TRX:
             "balance": int(balance * SUN_PER_TRX),
         }
 
+    def get_balance_batch(self, address_list: list) -> dict:
+        """
+        Get TRX balances for multiple addresses in parallel.
+
+        Returns:
+            dict {address: {"balance_ui": float, "balance": int}}
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def fetch(addr):
+            try:
+                balance = self.client.get_account_balance(addr)
+                return addr, {"balance_ui": float(balance), "balance": int(balance * SUN_PER_TRX)}
+            except Exception:
+                return addr, {"balance_ui": 0.0, "balance": 0}
+
+        results = {}
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(fetch, addr): addr for addr in address_list}
+            for future in as_completed(futures):
+                addr, data = future.result()
+                results[addr] = data
+        return results
+
     def transfer_native(self, to: str, amount: float, private_key: Optional[str] = None) -> dict:
         """
         Transfer native TRX.

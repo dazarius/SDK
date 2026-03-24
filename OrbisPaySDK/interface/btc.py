@@ -474,6 +474,34 @@ class BTC:
         }
 
     @staticmethod
+    def get_balance_batch(address_list: list, testnet: bool = False) -> dict:
+        """
+        Get BTC balances for multiple addresses in parallel.
+
+        Returns:
+            dict {address: {"balance_ui": float, "balance": int}}
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def fetch(addr):
+            try:
+                if testnet:
+                    sat = int(NetworkAPI.get_balance_testnet(addr))
+                else:
+                    sat = int(NetworkAPI.get_balance(addr))
+                return addr, {"balance_ui": sat / SATOSHI_PER_BTC, "balance": sat}
+            except Exception:
+                return addr, {"balance_ui": 0.0, "balance": 0}
+
+        results = {}
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(fetch, addr): addr for addr in address_list}
+            for future in as_completed(futures):
+                addr, data = future.result()
+                results[addr] = data
+        return results
+
+    @staticmethod
     def get_balance_by_address(address: str, testnet: bool = False) -> dict:
         """Get balance for any Bitcoin address."""
         if testnet:
