@@ -23,7 +23,8 @@ setup(
 	    'tronpy',
 	    'bit',
         'bip_utils',
-        "tonutils"
+        "tonutils",
+        "websockets"
     ],
     python_requires='>=3.9',
 )

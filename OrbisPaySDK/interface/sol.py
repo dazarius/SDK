@@ -15,7 +15,7 @@ from solana.rpc.types import TxOpts, TokenAccountOpts
 from solana.rpc.types import TxOpts
 import solders
 from solders.message import Message
-from OrbisPaySDK.const import __SOL__NATIVE__,WRAPED_SOL
+from OrbisPaySDK.const import __SOL__NATIVE__, WRAPED_SOL, __SOL__WS__
 from typing import List, Dict, Any, Optional
 
 
@@ -388,8 +388,8 @@ class SOL:
 
         except Exception as e:
             return False
-    async def  _parse_transaction(self, signature: str) -> dict:
-    
+    async def  _parse_transaction(self, signature: str, retries: int = 5, retry_delay: float = 2.0) -> dict:
+
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -399,14 +399,20 @@ class SOL:
                 {
                     "encoding": "jsonParsed",
                     "maxSupportedTransactionVersion": 0,
-                    "commitment": "confirmed",
+                    "commitment": "finalized",
                 }
             ]
         }
 
-        async with httpx.AsyncClient() as client:
-            r = await client.post(self.rpc_url, json=payload, timeout=15)
-            data = r.json()
+        data = None
+        for attempt in range(retries):
+            async with httpx.AsyncClient() as client:
+                r = await client.post(self.rpc_url, json=payload, timeout=15)
+                data = r.json()
+            if data.get("result"):
+                break
+            if attempt < retries - 1:
+                await asyncio.sleep(retry_delay)
 
         tx = data.get("result")
         if not tx:
@@ -481,7 +487,6 @@ class SOL:
                 prog_info["info"] = parsed.get("info")
             result["programs"].append(prog_info)
 
-        # Тип транзакции
         programs = [p.get("program") for p in result["programs"]]
         types    = [p.get("type")    for p in result["programs"]]
 
@@ -495,6 +500,110 @@ class SOL:
             result["tx_type"] = "swap"
 
         return result
+
+    async def monitor(
+        self,
+        callback,
+        addresses: list = None,
+        ws_url: str = __SOL__WS__,
+        commitment: str = "finalized",
+        reconnect_delay: float = 3.0,
+        parsed: bool = False,
+        batch_size: int = 10,
+    ):
+        """
+        Monitor Solana blockchain via WebSocket for new transactions.
+
+        Args:
+            callback:     async function — всегда вызывается с raw value dict
+                          если parsed=True — дополнительно вызывается с {sig: tx}
+                          когда накопится batch_size транзакций
+            addresses:    список адресов для фильтра (пусто = все транзакции)
+            ws_url:       WebSocket endpoint (default: __SOL__WS__)
+            commitment:   "finalized" | "confirmed" | "processed"
+            reconnect_delay: секунд до переподключения при обрыве
+            parsed:       если True — дополнительно парсить пачками
+            batch_size:   сколько сигнатур накопить перед парсингом
+        """
+        import websockets
+        import json as _json
+
+        subscribe_msg = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "logsSubscribe",
+            "params": [
+                {"mentions": addresses} if addresses else "all",
+                {"commitment": commitment},
+            ],
+        }
+
+        queue: list[str] = []
+
+        sem = asyncio.Semaphore(3)
+
+        async def parse_one(sig):
+            async with sem:
+                return await self._parse_transaction(sig)
+
+        async def flush_queue():
+            batch, queue[:] = queue[:], []
+            results = await asyncio.gather(
+                *[parse_one(sig) for sig in batch],
+                return_exceptions=False,
+            )
+            parsed_batch = {
+                sig: tx for sig, tx in zip(batch, results)
+                if "error" not in tx
+            }
+            if parsed_batch:
+                try:
+                    await callback({"parsed": parsed_batch})
+                except Exception as cb_err:
+                    pass
+
+        while True:
+            try:
+                async with websockets.connect(
+                    ws_url,
+                    ping_interval=20,
+                    ping_timeout=30,
+                ) as ws:
+                    await ws.send(_json.dumps(subscribe_msg))
+                    await ws.recv()  # skip subscription confirmation
+
+                    while True:
+                        raw = await ws.recv()
+                        msg = _json.loads(raw)
+                        params = msg.get("params")
+                        if not params:
+                            continue
+
+                        value = params.get("result", {}).get("value", {})
+                        signature = value.get("signature")
+                        if not signature:
+                            continue
+
+                        try:
+                            await callback(value)
+                        except Exception as cb_err:
+                            print(f"[monitor] callback error: {cb_err}")
+
+                        if parsed:
+                            queue.append(signature)
+                            if len(queue) >= batch_size:
+                                asyncio.create_task(flush_queue())
+
+            except (websockets.ConnectionClosed, websockets.InvalidStatusCode):
+                await asyncio.sleep(reconnect_delay)
+            except Exception as e:
+                print(f"[monitor] error: {e}")
+                await asyncio.sleep(reconnect_delay)
+            except (websockets.ConnectionClosed, websockets.InvalidStatusCode):
+                await asyncio.sleep(reconnect_delay)
+            except Exception as e:
+                print(f"[monitor] error: {e}")
+                await asyncio.sleep(reconnect_delay)
 
     async def get_transactions(self, limit: int = 10, before: str = None) -> list[dict]:
        
