@@ -88,6 +88,14 @@ class TRX:
         provider_url: Optional[str] = None,
         api_key: Optional[str] = None,
     ):
+        """
+        Args:
+            network      (str): Network name — "mainnet", "shasta" (testnet), or "nile" (testnet).
+                                Default: "mainnet".
+            private_key  (str): Hex private key (64-char). Optional — can be set later.
+            provider_url (str): Custom TronGrid/TronStack HTTP endpoint. Overrides network param.
+            api_key      (str): TronGrid API key for higher rate limits. Optional.
+        """
         self.network = network
         self.private_key = None
         self.address = None
@@ -103,7 +111,16 @@ class TRX:
             self.set_private_key(private_key)
 
     def set_private_key(self, private_key: str):
-        """Set the private key for signing transactions."""
+        """
+        Sets the private key used for signing transactions.
+        Also derives and stores the corresponding wallet address.
+
+        Args:
+            private_key (str | PrivateKey): Hex string (64 chars) or PrivateKey instance.
+
+        Raises:
+            ValueError: If the type is unsupported.
+        """
         if isinstance(private_key, str):
             self.private_key = PrivateKey(bytes.fromhex(private_key))
         elif isinstance(private_key, PrivateKey):
@@ -119,6 +136,15 @@ class TRX:
         provider_url: Optional[str] = None,
         api_key: Optional[str] = None,
     ):
+        """
+        Updates instance parameters at runtime without recreating the object.
+
+        Args:
+            network      (str): New network name ("mainnet", "shasta", "nile").
+            private_key  (str): New hex private key.
+            provider_url (str): New custom HTTP provider URL (takes priority over network).
+            api_key      (str): New TronGrid API key.
+        """
         if api_key:
             self.api_key = api_key
         if network:
@@ -133,7 +159,16 @@ class TRX:
 
     @staticmethod
     def gen_wallet() -> dict:
-        """Generate a new Tron wallet."""
+        """
+        Generates a new random Tron wallet.
+
+        Returns:
+            dict: {
+                "private_key": str,   # hex-encoded private key (64 chars)
+                "address":     str,   # base58check address (starts with T)
+                "public_key":  str,   # hex-encoded public key
+            }
+        """
         priv = PrivateKey.random()
         return {
             "private_key": priv.hex(),
@@ -142,17 +177,45 @@ class TRX:
         }
 
     def get_address(self) -> str:
-        """Get the current wallet address."""
+        """
+        Returns the current wallet address derived from the stored private key.
+
+        Returns:
+            str: Base58check address (starts with T on mainnet).
+
+        Raises:
+            ValueError: If no private key has been set.
+        """
         if not self.address:
             raise ValueError("Private key not set. Use set_private_key() first.")
         return self.address
 
-    def get_balance(self, address: Optional[str] = None) -> dict:
+    def sign_msg(self, msg: str, private_key: Optional[str] = None) -> str:
         """
-        Get TRX balance.
+        Signs an arbitrary message by hashing it and signing the hash.
+
+        Args:
+            msg         (str): Message to sign (encoded as UTF-8 bytes).
+            private_key (str): Hex private key override. Falls back to self.private_key.
 
         Returns:
-            dict with balance_ui (TRX) and balance (sun).
+            str: Hex-encoded signature string.
+        """
+        from tronpy.keys import PrivateKey
+        key = PrivateKey(bytes.fromhex(private_key or self.private_key))
+        msg_bytes = msg.encode("utf-8")
+        signature = key.sign_msg_hash(msg_bytes)
+        return signature.hex()
+
+    def get_balance(self, address: Optional[str] = None) -> dict:
+        """
+        Returns the TRX balance for an address.
+
+        Args:
+            address (str): Tron address to query. Defaults to the active wallet address.
+
+        Returns:
+            dict: { "balance_ui": float (TRX), "balance": int (sun) }
         """
         if not address:
             address = self.get_address()
@@ -164,10 +227,14 @@ class TRX:
 
     def get_balance_batch(self, address_list: list) -> dict:
         """
-        Get TRX balances for multiple addresses in parallel.
+        Fetches TRX balances for multiple addresses concurrently using a thread pool.
+
+        Args:
+            address_list (list[str]): List of Tron base58check addresses.
 
         Returns:
-            dict {address: {"balance_ui": float, "balance": int}}
+            dict: { address: {"balance_ui": float (TRX), "balance": int (sun)} }
+                  Returns 0.0 / 0 on error for a given address.
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -275,10 +342,15 @@ class TRX:
         decimals: Optional[int] = None,
     ) -> dict:
         """
-        Get TRC20 token balance.
+        Returns the TRC20 token balance for an address.
+
+        Args:
+            contract_address (str): TRC20 contract address.
+            address          (str): Owner address. Defaults to active wallet address.
+            decimals         (int): Token decimals. Auto-detected from contract if not provided.
 
         Returns:
-            dict with balance (raw) and balance_ui (human-readable).
+            dict: { "balance": int (raw), "balance_ui": float, "decimals": int }
         """
         if not address:
             address = self.get_address()
@@ -297,7 +369,15 @@ class TRX:
         }
 
     def get_trc20_info(self, contract_address: str) -> dict:
-        """Get TRC20 token info (name, symbol, decimals)."""
+        """
+        Returns basic metadata for a TRC20 token contract.
+
+        Args:
+            contract_address (str): TRC20 contract address.
+
+        Returns:
+            dict: { "name": str, "symbol": str, "decimals": int }
+        """
         contract = self.client.get_contract(contract_address)
         return {
             "name": contract.functions.name(),
@@ -314,14 +394,18 @@ class TRX:
         private_key: Optional[str] = None,
     ) -> dict:
         """
-        Approve TRC20 token spending.
+        Approves a spender to transfer TRC20 tokens on behalf of the wallet.
 
         Args:
-            contract_address: TRC20 token contract address.
-            spender: Address allowed to spend tokens.
-            amount: Raw amount to approve (with decimals already applied).
-            fee_limit: Max energy cost in sun.
-            private_key: Optional hex private key.
+            contract_address (str): TRC20 token contract address.
+            spender          (str): Address authorised to spend tokens.
+            amount           (int): Raw allowance amount (decimals already applied).
+            fee_limit        (int): Maximum energy cost in sun. Default: 10 TRX.
+            private_key      (str): Hex private key override. Falls back to self.private_key.
+
+        Returns:
+            dict: { "tx_hash": str, "status": "success"|"failed", "spender": str,
+                    "amount": int, "raw_result": dict }
         """
         key = self._resolve_key(private_key)
         from_addr = key.public_key.to_base58check_address()
@@ -351,28 +435,73 @@ class TRX:
         owner: Optional[str] = None,
         spender: str = "",
     ) -> int:
-        """Check TRC20 allowance."""
+        """
+        Returns the current TRC20 spending allowance granted by owner to spender.
+
+        Args:
+            contract_address (str): TRC20 token contract address.
+            owner            (str): Token owner address. Defaults to active wallet address.
+            spender          (str): Address whose allowance to check.
+
+        Returns:
+            int: Remaining allowance in raw token units.
+        """
         if not owner:
             owner = self.get_address()
         contract = self.client.get_contract(contract_address)
         return contract.functions.allowance(owner, spender)
 
     def get_transaction(self, tx_id: str) -> dict:
-        """Get transaction details by ID."""
+        """
+        Returns the raw transaction object from the Tron node by transaction ID.
+
+        Args:
+            tx_id (str): Transaction hash / ID string.
+
+        Returns:
+            dict: Raw transaction dict as returned by tronpy.
+        """
         return self.client.get_transaction(tx_id)
 
     def get_transaction_info(self, tx_id: str) -> dict:
-        """Get detailed transaction info (including receipt, energy usage, etc.)."""
+        """
+        Returns detailed transaction info including receipt, fee, and energy/bandwidth usage.
+
+        Args:
+            tx_id (str): Transaction hash / ID string.
+
+        Returns:
+            dict: Extended transaction info dict from tronpy (contains receipt, log, contractResult, etc.).
+        """
         return self.client.get_transaction_info(tx_id)
 
     def get_account_resource(self, address: Optional[str] = None) -> dict:
-        """Get account resource info (bandwidth, energy)."""
+        """
+        Returns resource info for an account — bandwidth, energy, and freeze state.
+
+        Args:
+            address (str): Tron address to query. Defaults to the active wallet address.
+
+        Returns:
+            dict: Resource dict from tronpy with keys like freeNetUsed, NetLimit, EnergyLimit, etc.
+        """
         if not address:
             address = self.get_address()
         return self.client.get_account_resource(address)
 
     def _resolve_key(self, private_key: Optional[str] = None) -> PrivateKey:
-        """Resolve private key from parameter or stored key."""
+        """
+        Resolves the PrivateKey to use for signing, from parameter or stored key.
+
+        Args:
+            private_key (str): Hex private key override. If None, uses self.private_key.
+
+        Returns:
+            PrivateKey: tronpy PrivateKey instance.
+
+        Raises:
+            ValueError: If no key is provided or stored.
+        """
         if private_key:
             return PrivateKey(bytes.fromhex(private_key))
         if self.private_key:

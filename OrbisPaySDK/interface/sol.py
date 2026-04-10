@@ -15,7 +15,7 @@ from solana.rpc.types import TxOpts, TokenAccountOpts
 from solana.rpc.types import TxOpts
 import solders
 from solders.message import Message
-from OrbisPaySDK.const import __SOL__NATIVE__, WRAPED_SOL, __SOL__WS__
+from OrbisPaySDK.const import __SOL__NATIVE__, WRAPED_SOL, __SOL__WS__, __SOL__WS__DEVNET__, __SOL__EXPLORERS__
 from typing import List, Dict, Any, Optional
 
 
@@ -47,18 +47,36 @@ currency_sym = "$"
 
 class SOL:
     def __init__(self, rpc_url = "https://api.mainnet-beta.solana.com", KEYPAIR: Optional[Union[str, solders.keypair.Keypair]] = None,TOKEN_MINT: Optional[str] = None,build_tx:bool = False):
-            self.rpc_url = rpc_url
-            self.build_tx = build_tx
-            self.client = AsyncClient(rpc_url)
-            self.KEYPAIR = None
-            self.PROGRAM_ID = TOKEN_PROGRAM_ID # Default to the SPL Token Program ID
-            self.TOKEN_MINT = TOKEN_MINT
-            self.WRAPED_SOL_ID = spl.token.constants.WRAPPED_SOL_MINT
-            if KEYPAIR:
-                self.set_keypair(KEYPAIR)
+        """
+        Args:
+            rpc_url    (str):           Solana RPC endpoint. Default: mainnet-beta.
+            KEYPAIR    (str|Keypair):   Base58 private key string or Keypair object. Optional.
+            TOKEN_MINT (str):           SPL token mint address used by transfer_token. Optional.
+            build_tx   (bool):          If True, transfer_* methods return a Transaction object
+                                        instead of broadcasting to the network.
+        """
+        self.rpc_url = rpc_url
+        self.build_tx = build_tx
+        self.client = AsyncClient(rpc_url)
+        self.KEYPAIR = None
+        self.external_signers: list = []  # persistent co-signers added via add_signer()
+        self.PROGRAM_ID = TOKEN_PROGRAM_ID # Default to the SPL Token Program ID
+        self.TOKEN_MINT = TOKEN_MINT
+        self.WRAPED_SOL_ID = spl.token.constants.WRAPPED_SOL_MINT
+        if KEYPAIR:
+            self.set_keypair(KEYPAIR)
     
 
     def set_keypair(self, KEYPAIR: Union[str, solders.keypair.Keypair]):
+        """
+        Sets the keypair used to sign transactions.
+
+        Args:
+            KEYPAIR (str | Keypair): Base58 private key string or a Keypair object.
+
+        Raises:
+            ValueError: If the string is invalid or the type is unsupported.
+        """
         if isinstance(KEYPAIR, str):
             try:
                 self.KEYPAIR = solders.keypair.Keypair.from_base58_string(KEYPAIR)
@@ -69,7 +87,52 @@ class SOL:
         else:
             raise ValueError("KEYPAIR must be a Keypair instance or a base58 encoded string.")
 
+    def add_signer(self, keypair) -> None:
+        """
+        Adds a keypair to the persistent external_signers list.
+
+        The signer will be automatically included in every subsequent transaction
+        built by send_instructions and multi_send_* methods. Duplicates are ignored.
+
+        Args:
+            keypair (str | Keypair): Base58 private key string or Keypair object.
+        """
+        kp = self._resolve_keypair(keypair)
+        pk = str(kp.pubkey())
+        if not any(str(s.pubkey()) == pk for s in self.external_signers):
+            self.external_signers.append(kp)
+
+    def remove_signer(self, keypair) -> bool:
+        """
+        Removes a keypair from the external_signers list.
+
+        Args:
+            keypair (str | Keypair): Base58 private key string, Keypair object,
+                                     or Base58 public key string.
+
+        Returns:
+            bool: True if the signer was found and removed, False otherwise.
+        """
+        try:
+            kp = self._resolve_keypair(keypair)
+            pk = str(kp.pubkey())
+        except Exception:
+            pk = str(keypair)  # treat as pubkey string directly
+
+        before = len(self.external_signers)
+        self.external_signers = [s for s in self.external_signers if str(s.pubkey()) != pk]
+        return len(self.external_signers) < before
+
     def set_params(self, rpc_url: Optional[str] = None, KEYPAIR: Optional[Union[str, solders.keypair.Keypair]] = None,TOKEN_MINT: Optional[str] = None, build_tx = None):
+        """
+        Updates instance parameters at runtime without recreating the object.
+
+        Args:
+            rpc_url    (str):         New RPC endpoint.
+            KEYPAIR    (str|Keypair): New keypair.
+            TOKEN_MINT (str):         New token mint address.
+            build_tx   (bool):        New value for the build_tx flag.
+        """
         if rpc_url:
             self.rpc_url = rpc_url
             self.client = AsyncClient(rpc_url)
@@ -81,8 +144,18 @@ class SOL:
             self.build_tx = build_tx
 
     def get_pubkey(self, returnString: Optional[bool] = None):
+        """
+        Returns the public key derived from the current keypair.
 
-        
+        Args:
+            returnString (bool): If True, returns a Base58 string; otherwise returns a Pubkey object.
+
+        Returns:
+            str | Pubkey: The public key.
+
+        Raises:
+            ValueError: If no keypair has been set.
+        """
         if self.KEYPAIR:
             pubkey = self.KEYPAIR.pubkey()
             pubkey_str = str(pubkey)
@@ -92,13 +165,75 @@ class SOL:
         
         raise ValueError("Keypair not set")
 
+    @staticmethod
+    def format_tx_url(explorer: str, signature: str, _format = "/tx/") -> str:
+        """
+        Builds a block explorer URL for a given transaction signature.
+
+        Args:
+            explorer  (str): Explorer base URL or alias "mainnet" / "devnet".
+            signature (str): Transaction signature.
+            _format   (str): Unused legacy parameter.
+
+        Returns:
+            str: Full URL, e.g. https://solscan.io/tx/<signature>.
+        """
+        from urllib.parse import urlparse, urlunparse
+        if explorer in ["mainnet", "devnet"]:
+            explorer = __SOL__EXPLORERS__.get(explorer, __SOL__EXPLORERS__["mainnet"]).get("solscan")
+        p = urlparse(explorer)
+        path = p.path.rstrip("/") + f"/tx/{signature}"
+        return urlunparse((p.scheme, p.netloc, path, p.params, p.query, p.fragment))
+
+    def sign_msg(self, msg: str, keypair=None) -> str:
+        """
+        Signs an arbitrary UTF-8 message with the keypair.
+
+        Args:
+            msg     (str):     Message to sign.
+            keypair (Keypair): Optional keypair to use instead of self.KEYPAIR.
+
+        Returns:
+            str: 64-byte Ed25519 signature as a hex string.
+
+        Raises:
+            ValueError: If no keypair is provided and none is set on the instance.
+        """
+        import hashlib
+        kp = keypair or self.KEYPAIR
+        if not kp:
+            raise ValueError("Keypair not set")
+        msg_bytes = msg.encode("utf-8")
+        signed = kp.sign_message(msg_bytes)
+        return bytes(signed).hex()
+
     def gen_wallet(self):
+        """
+        Generates a new random Solana wallet.
+
+        Returns:
+            dict: {
+                "private_key": str,   # Base58-encoded full keypair (64 bytes)
+                "public_key":  str,   # Base58 public key
+            }
+        """
         acc = solders.keypair.Keypair()
         return {
             "private_key": base58.b58encode(bytes(acc)).decode("utf-8"),
             "public_key": str(acc.pubkey())
         }
     async def get_balance(self):
+        """
+        Returns the SOL balance of the wallet set in self.KEYPAIR.
+
+        Returns:
+            dict: {
+                "balance":           float,  # SOL amount
+                "ui_balance":        float,  # same as balance (compatibility alias)
+                "string_ui_balance": str,    # formatted string, e.g. "0.000000000"
+                "raw_balance":       int,    # amount in lamports
+            }
+        """
         resp = await self.client.get_balance(self.get_pubkey())
         lamports = resp.value
         sol_balance = lamports / LAMPORTS_PER_SOL
@@ -110,10 +245,14 @@ class SOL:
         }  
     async def get_balance_batch(self, address_list: list) -> dict:
         """
-        Get SOL balances for multiple addresses in parallel.
+        Fetches SOL balances for multiple addresses concurrently.
+
+        Args:
+            address_list (list[str]): List of Base58 public key strings.
 
         Returns:
-            dict {address: {"balance": float, "raw_balance": int}}
+            dict: { address: {"balance": float, "raw_balance": int} }
+                  On error for a given address returns {"balance": 0.0, "raw_balance": 0}.
         """
         from solders.pubkey import Pubkey
 
@@ -129,7 +268,22 @@ class SOL:
         results = await asyncio.gather(*[fetch(addr) for addr in address_list])
         return dict(results)
 
-    async def get_token_accounts_by_owner(self,owner_pubkey: Optional[str] = None):
+    async def get_token_accounts_by_owner(self, owner_pubkey: Optional[str] = None):
+        """
+        Returns all SPL token accounts owned by an address, with balances and Metaplex metadata.
+
+        Args:
+            owner_pubkey (str): Base58 owner address. Falls back to self.KEYPAIR if not provided.
+
+        Returns:
+            dict: { mint_address: {
+                "ui_balance":        float | None,
+                "raw_balance":       str,         # raw integer amount as string
+                "string_ui_balance": str,
+                "fullData":          dict,         # raw RPC response for the account
+                "metadata":          dict | None,  # Metaplex name, symbol, uri
+            }}
+        """
         if not owner_pubkey:
             print("No owner pubkey provided, using the wallet's pubkey.")
             owner_pubkey = self.get_pubkey(returnString=True)
@@ -172,7 +326,16 @@ class SOL:
             
 
             return token_data
-    async def get_token_balance(self, data:dict):
+    async def get_token_balance(self, data: dict):
+        """
+        (Not implemented) Fetch balances for specific tokens across multiple wallets.
+
+        Args:
+            data (dict): {
+                "owner_pubkeys": list[str],  # list of owner addresses
+                "tokens":        list[str],  # list of token mint addresses
+            }
+        """
         owner_pubkey:list = data.get("owner_pubkeys")
         tokens:list = data.get("tokens")
         if not owner_pubkey or not tokens:
@@ -181,6 +344,16 @@ class SOL:
             pass
         pass
     async def fetch_metadata_raw(self, mint_address: str):
+        """
+        Reads Metaplex on-chain metadata for a token directly from the metadata PDA account.
+
+        Args:
+            mint_address (str): Base58 token mint address.
+
+        Returns:
+            dict | None: { "mint": str, "name": str, "symbol": str, "uri": str }
+                         None if the metadata account does not exist.
+        """
         METADATA_PROGRAM_ID = solders.pubkey.Pubkey.from_string(
             "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
         )
@@ -243,7 +416,21 @@ class SOL:
             "uri": uri.strip(),  
         }
     async def transfer_token(self, to: str, amount: float):
-       
+        """
+        Transfers an SPL token to the given address.
+        Automatically creates the recipient's ATA if it does not exist.
+
+        Args:
+            to     (str):   Base58 recipient address.
+            amount (float): Token amount in token units (not raw lamport-equivalent).
+
+        Returns:
+            Transaction | Signature: If build_tx=True returns a Transaction object,
+                                     otherwise returns the broadcast transaction signature.
+
+        Raises:
+            ValueError: If TOKEN_MINT or KEYPAIR is not set.
+        """
         if not self.TOKEN_MINT:
             raise ValueError("not set TOKEN_MINT.")
         if not self.KEYPAIR:
@@ -269,14 +456,12 @@ class SOL:
                 )
             )
 
-        decimals = (await token.get_mint_info()).decimals
-        real_amount = int(amount * (10 ** decimals))
         params = TransferParams(
             program_id=TOKEN_PROGRAM_ID,
             source=sender_ata,
             dest=receiver_ata,
             owner=sender_pubkey,
-            amount=real_amount
+            amount=amount
         )
 
         tx.add(transfer(params))
@@ -287,7 +472,21 @@ class SOL:
         return resp.value
 
 
-    async def transfer_native(self, to:str, amount: int):
+    async def transfer_native(self, to: str, amount: int):
+        """
+        Transfers native SOL via the System Program.
+
+        Args:
+            to     (str): Base58 recipient address.
+            amount (int): Amount in lamports (1 SOL = 1_000_000_000 lamports).
+
+        Returns:
+            Transaction | Signature: If build_tx=True returns a Transaction object,
+                                     otherwise returns the broadcast transaction signature.
+
+        Raises:
+            ValueError: If KEYPAIR is not set.
+        """
         if not self.KEYPAIR:
             raise ValueError("not set KEYPAIR.")
 
@@ -297,7 +496,7 @@ class SOL:
             ts(tsf(
                 from_pubkey=sender_pubkey,
                 to_pubkey=receiver_pubkey,
-                lamports=amount * LAMPORTS_PER_SOL
+                lamports=amount
             ))
         ]
         msg = Message(ixns, self.get_pubkey())
@@ -309,7 +508,429 @@ class SOL:
             return tx
         resp =  await self.client.send_transaction(tx)
         return resp.value
-    async def build_transaction(self,data):
+
+    # ------------------------------------------------------------------ #
+    #  Instruction builders  (for composing multi-send transactions)       #
+    # ------------------------------------------------------------------ #
+
+    def build_sol_transfer_ix(
+        self,
+        to: str,
+        lamports: int,
+        from_pubkey=None,
+    ) -> list:
+        """
+        Builds a single native SOL transfer instruction (System Program).
+        Does NOT broadcast anything — returns a list so you can extend your
+        instruction list and batch multiple transfers into one transaction.
+
+        Args:
+            to          (str):    Base58 recipient address.
+            lamports    (int):    Amount in lamports (1 SOL = 1_000_000_000).
+            from_pubkey (Pubkey): Sender pubkey. Defaults to self.KEYPAIR pubkey.
+
+        Returns:
+            list[Instruction]: One-element list containing the transfer instruction.
+
+        Raises:
+            ValueError: If no sender pubkey is available.
+        """
+        sender = from_pubkey or self.get_pubkey()
+        if isinstance(sender, str):
+            sender = solders.pubkey.Pubkey.from_string(sender)
+        receiver = solders.pubkey.Pubkey.from_string(to)
+        ix = ts(tsf(from_pubkey=sender, to_pubkey=receiver, lamports=lamports))
+        return [ix]
+
+    async def build_token_transfer_ix(
+        self,
+        to: str,
+        amount: int,
+        mint: str = None,
+        from_pubkey=None,
+    ) -> list:
+        """
+        Builds SPL token transfer instruction(s).
+        If the recipient's Associated Token Account (ATA) does not exist,
+        a create_associated_token_account instruction is prepended automatically.
+
+        Args:
+            to          (str):    Base58 recipient owner address (not their ATA).
+            amount      (int):    Raw token amount (decimals already applied).
+            mint        (str):    Token mint address. Falls back to self.TOKEN_MINT.
+            from_pubkey (Pubkey): Sender pubkey. Defaults to self.KEYPAIR pubkey.
+
+        Returns:
+            list[Instruction]: [create_ata_ix (optional), transfer_ix]
+
+        Raises:
+            ValueError: If mint is not provided and self.TOKEN_MINT is not set.
+        """
+        mint_addr = mint or self.TOKEN_MINT
+        if not mint_addr:
+            raise ValueError("Token mint not provided and TOKEN_MINT is not set.")
+
+        sender = from_pubkey or self.get_pubkey()
+        if isinstance(sender, str):
+            sender = solders.pubkey.Pubkey.from_string(sender)
+        receiver_pubkey = solders.pubkey.Pubkey.from_string(to)
+        token_pubkey    = solders.pubkey.Pubkey.from_string(mint_addr)
+
+        sender_ata   = get_associated_token_address(sender, token_pubkey)
+        receiver_ata = get_associated_token_address(receiver_pubkey, token_pubkey)
+
+        ixs = []
+        res = await self.client.get_account_info(receiver_ata)
+        if res.value is None:
+            ixs.append(
+                create_associated_token_account(
+                    payer=sender,
+                    owner=receiver_pubkey,
+                    mint=token_pubkey,
+                )
+            )
+
+        ixs.append(
+            transfer(
+                TransferParams(
+                    program_id=TOKEN_PROGRAM_ID,
+                    source=sender_ata,
+                    dest=receiver_ata,
+                    owner=sender,
+                    amount=amount,
+                )
+            )
+        )
+        return ixs
+
+    async def multi_send_sol(self, recipients: list[dict]) -> str:
+        """
+        Sends native SOL to multiple recipients in a single transaction.
+        All transfers are packed into one set of instructions — saves on fees
+        compared to N separate transactions.
+
+        Args:
+            recipients (list[dict]): [
+                { "to": str, "lamports": int },
+                ...
+            ]
+            Maximum ~20 recipients per transaction (Solana tx size limit).
+
+        Returns:
+            str: Transaction signature.
+
+        Raises:
+            ValueError: If KEYPAIR is not set.
+
+        Example:
+            await sol.multi_send_sol([
+                {"to": "ABC...", "lamports": 1_000_000},
+                {"to": "DEF...", "lamports": 2_000_000},
+            ])
+        """
+        if not self.KEYPAIR:
+            raise ValueError("KEYPAIR is not set.")
+
+        ixs = []
+        for r in recipients:
+            ixs.extend(self.build_sol_transfer_ix(to=r["to"], lamports=r["lamports"]))
+
+        blockhash_resp = await self.client.get_latest_blockhash()
+        blockhash = blockhash_resp.value.blockhash
+        msg = Message(ixs, self.get_pubkey())
+        tx  = Transaction([self.KEYPAIR], msg, blockhash)
+        resp = await self.client.send_transaction(tx)
+        return str(resp.value)
+
+    async def multi_send_token(
+        self,
+        recipients: list[dict],
+        mint: str = None,
+    ) -> str:
+        """
+        Sends SPL tokens to multiple recipients in a single transaction.
+        ATA creation instructions are automatically included for recipients
+        that don't have an account yet.
+
+        Args:
+            recipients (list[dict]): [
+                { "to": str, "amount": int },   # amount in raw units
+                ...
+            ]
+            mint (str): Token mint address. Falls back to self.TOKEN_MINT.
+            Maximum ~7-10 recipients per transaction depending on ATA creations.
+
+        Returns:
+            str: Transaction signature.
+
+        Raises:
+            ValueError: If KEYPAIR is not set or mint is missing.
+
+        Example:
+            await sol.multi_send_token(
+                recipients=[
+                    {"to": "ABC...", "amount": 1_000_000},
+                    {"to": "DEF...", "amount": 2_000_000},
+                ],
+                mint="EPjF..."  # USDC mint
+            )
+        """
+        if not self.KEYPAIR:
+            raise ValueError("KEYPAIR is not set.")
+
+        ixs = []
+        for r in recipients:
+            ixs.extend(
+                await self.build_token_transfer_ix(
+                    to=r["to"],
+                    amount=r["amount"],
+                    mint=mint,
+                )
+            )
+
+        blockhash_resp = await self.client.get_latest_blockhash()
+        blockhash = blockhash_resp.value.blockhash
+        msg = Message(ixs, self.get_pubkey())
+        tx  = Transaction([self.KEYPAIR], msg, blockhash)
+        resp = await self.client.send_transaction(tx, self.KEYPAIR, opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed))
+        return str(resp.value)
+
+    # ------------------------------------------------------------------ #
+    #  Multi-wallet (multi-signer) sends                                   #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _resolve_keypair(keypair) -> solders.keypair.Keypair:
+        """
+        Resolves a Keypair object from a base58 private key string or a Keypair instance.
+
+        Args:
+            keypair (str | Keypair): Base58-encoded private key string or a Keypair object.
+
+        Returns:
+            solders.keypair.Keypair
+
+        Raises:
+            ValueError: If the type is unsupported or the string is invalid.
+        """
+        if isinstance(keypair, solders.keypair.Keypair):
+            return keypair
+        if isinstance(keypair, str):
+            return solders.keypair.Keypair.from_base58_string(keypair)
+        raise ValueError("keypair must be a base58 string or a Keypair instance.")
+
+    def _get_signers(
+        self,
+        fee_payer=None,
+        extra: list = None,
+    ) -> list:
+        """
+        Assembles the complete signer list for a transaction.
+
+        Order:
+          1. fee_payer (or self.KEYPAIR if fee_payer is None) — always first
+          2. self.external_signers — persistent co-signers added via add_signer()
+          3. extra — any keypairs passed at call time
+
+        Duplicates are silently skipped (comparison by public key).
+
+        Args:
+            fee_payer (str | Keypair): Override the fee-paying keypair.
+                                       Defaults to self.KEYPAIR.
+            extra     (list):          Additional keypairs (str | Keypair) to include.
+
+        Returns:
+            list[Keypair]: Deduplicated signer list, fee payer at index 0.
+
+        Raises:
+            ValueError: If no fee payer is available (self.KEYPAIR not set and
+                        fee_payer not provided).
+        """
+        payer_kp = self._resolve_keypair(fee_payer) if fee_payer else self.KEYPAIR
+        if not payer_kp:
+            raise ValueError("KEYPAIR is not set and no fee_payer provided.")
+
+        seen = {str(payer_kp.pubkey())}
+        result = [payer_kp]
+
+        for kp in self.external_signers:
+            pk = str(kp.pubkey())
+            if pk not in seen:
+                seen.add(pk)
+                result.append(kp)
+
+        for item in (extra or []):
+            kp = self._resolve_keypair(item)
+            pk = str(kp.pubkey())
+            if pk not in seen:
+                seen.add(pk)
+                result.append(kp)
+
+        return result
+
+    @staticmethod
+    def _filter_signers(signers: list, msg: Message) -> list:
+        """
+        Returns only the keypairs whose public keys appear in the Message's
+        required-signer slots (first ``num_required_signatures`` account keys).
+
+        Solana's Transaction::sign panics if a supplied keypair's pubkey is not
+        listed as a required signer in the message, so this guard must be applied
+        before constructing every Transaction object.
+
+        Args:
+            signers (list[Keypair]): Candidate keypair list (fee payer first).
+            msg     (Message):       Compiled transaction message.
+
+        Returns:
+            list[Keypair]: Filtered list, preserving original order.
+        """
+        n = msg.header.num_required_signatures
+        required = {str(k) for k in msg.account_keys[:n]}
+        return [kp for kp in signers if str(kp.pubkey()) in required]
+
+    async def multi_send_sol_from_many(
+        self,
+        transfers: list[dict],
+        fee_payer=None,
+    ) -> str:
+        """
+        Sends native SOL from multiple different wallets in a single transaction.
+        Each unique sender keypair is included as a signer so the network
+        can verify all debit authorisations.
+
+        Args:
+            transfers (list[dict]): [
+                {
+                    "keypair": str | Keypair,  # sender's private key or Keypair
+                    "to":      str,            # Base58 recipient address
+                    "lamports": int,           # amount in lamports
+                },
+                ...
+            ]
+            fee_payer (str | Keypair): Keypair that pays the transaction fee.
+                                       Defaults to the first sender in the list.
+
+        Returns:
+            str: Transaction signature.
+
+        Example:
+            await sol.multi_send_sol_from_many([
+                {"keypair": "4xPr...", "to": "ABC...", "lamports": 1_000_000},
+                {"keypair": kp2,       "to": "DEF...", "lamports": 2_000_000},
+            ])
+        """
+        transfer_kps: list = []
+        seen_pubkeys: set = set()
+        ixs = []
+
+        for t in transfers:
+            kp = self._resolve_keypair(t["keypair"])
+            pk = str(kp.pubkey())
+            if pk not in seen_pubkeys:
+                seen_pubkeys.add(pk)
+                transfer_kps.append(kp)
+            ixs.extend(
+                self.build_sol_transfer_ix(
+                    to=t["to"],
+                    lamports=t["lamports"],
+                    from_pubkey=kp.pubkey(),
+                )
+            )
+
+        default_payer = self._resolve_keypair(fee_payer) if fee_payer else transfer_kps[0]
+        all_signers = self._get_signers(fee_payer=default_payer, extra=transfer_kps)
+
+        blockhash_resp = await self.client.get_latest_blockhash()
+        blockhash = blockhash_resp.value.blockhash
+        msg = Message(ixs, all_signers[0].pubkey())
+        tx  = Transaction(self._filter_signers(all_signers, msg), msg, blockhash)
+        resp = await self.client.send_transaction(tx)
+        return str(resp.value)
+
+    async def multi_send_token_from_many(
+        self,
+        transfers: list[dict],
+        mint: str = None,
+        fee_payer=None,
+    ) -> str:
+        """
+        Sends SPL tokens from multiple different wallets in a single transaction.
+        ATA creation instructions are prepended automatically for recipients
+        that don't have an account yet (paid by the fee payer).
+
+        Args:
+            transfers (list[dict]): [
+                {
+                    "keypair": str | Keypair,  # sender's private key or Keypair
+                    "to":      str,            # Base58 recipient owner address
+                    "amount":  int,            # raw token amount (decimals applied)
+                },
+                ...
+            ]
+            mint      (str):           Token mint address. Falls back to self.TOKEN_MINT.
+            fee_payer (str | Keypair): Keypair that pays the transaction fee and ATA creations.
+                                       Defaults to the first sender.
+
+        Returns:
+            str: Transaction signature.
+
+        Example:
+            await sol.multi_send_token_from_many(
+                transfers=[
+                    {"keypair": "4xPr...", "to": "ABC...", "amount": 1_000_000},
+                    {"keypair": kp2,       "to": "DEF...", "amount": 2_000_000},
+                ],
+                mint="EPjF..."  # USDC
+            )
+        """
+        transfer_kps: list = []
+        seen_pubkeys: set = set()
+        ixs = []
+
+        for t in transfers:
+            kp = self._resolve_keypair(t["keypair"])
+            pk = str(kp.pubkey())
+            if pk not in seen_pubkeys:
+                seen_pubkeys.add(pk)
+                transfer_kps.append(kp)
+            ixs.extend(
+                await self.build_token_transfer_ix(
+                    to=t["to"],
+                    amount=t["amount"],
+                    mint=mint,
+                    from_pubkey=kp.pubkey(),
+                )
+            )
+
+        default_payer = self._resolve_keypair(fee_payer) if fee_payer else transfer_kps[0]
+        all_signers = self._get_signers(fee_payer=default_payer, extra=transfer_kps)
+
+        blockhash_resp = await self.client.get_latest_blockhash()
+        blockhash = blockhash_resp.value.blockhash
+        msg = Message(ixs, all_signers[0].pubkey())
+        tx  = Transaction(self._filter_signers(all_signers, msg), msg, blockhash)
+        resp = await self.client.send_transaction(tx, opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed))
+        return str(resp.value)
+
+    async def build_transaction(self, data: dict):
+        """
+        Builds an unsigned transaction for a native SOL transfer.
+
+        Args:
+            data (dict): {
+                "_from":   str,   # Base58 sender address
+                "_to":     str,   # Base58 recipient address
+                "_amount": float, # Amount in SOL
+                "_token":  str,   # Mint address or __SOL__NATIVE__ for native SOL
+            }
+
+        Returns:
+            dict: {
+                "tx":               str,  # HEX-encoded serialised transaction
+                "recent_blockhash": str,  # blockhash string used in the transaction
+            }
+        """
         recent_blockhash = self.client.get_latest_blockhash(Confirmed).value.blockhash
 
         _from = solders.pubkey.Pubkey.from_string(data["_from"])
@@ -334,49 +955,106 @@ class SOL:
             "tx": tx.to_solders().to_bytes().hex(),
             "recent_blockhash": str(recent_blockhash),
         }
+    async def send_instructions(
+        self,
+        ixs: list,
+        signers: list = None,
+        fee_payer=None,
+    ) -> str:
+        """
+        Builds and sends a transaction from a list of instructions.
+        Accepts both flat lists and nested lists (auto-flattened), so you can
+        safely use either append or extend when collecting instructions.
+
+        Transaction size limit: ~1232 bytes per transaction.
+          - SOL transfer instruction:   ~50 bytes  → up to ~20 per tx
+          - Token transfer instruction: ~100 bytes → up to ~10 per tx
+          - ATA creation instruction:   ~150 bytes → counts against the same budget
+          Mixed batches: sum all instruction sizes and stay under 1232 bytes.
+
+        Args:
+            ixs       (list):          Instruction list — flat [ix, ix] or nested [[ix], [ix]].
+            signers   (list):          Extra keypairs that must co-sign the transaction
+                                       (str base58 or Keypair). self.KEYPAIR is always
+                                       included automatically as fee payer.
+            fee_payer (str|Keypair):   Override the fee-paying keypair. Defaults to self.KEYPAIR.
+
+        Returns:
+            str: Transaction signature.
+
+        Raises:
+            ValueError: If KEYPAIR is not set, no fee_payer is provided,
+                        and external_signers is empty.
+
+        Example:
+            ixs = []
+            for r in recipients:
+                ixs.append(await sol.build_sol_transfer_ix(r["to"], r["lamports"]))
+            sig = await sol.send_instructions(ixs)
+
+            # multi-wallet
+            sig = await sol.send_instructions(ixs, signers=[kp2, kp3])
+        """
+        all_signers = self._get_signers(fee_payer=fee_payer, extra=signers)
+        payer_kp = all_signers[0]
+
+        # flatten [[ix, ix], [ix]] → [ix, ix, ix]
+        flat_ixs = []
+        for item in ixs:
+            if isinstance(item, list):
+                flat_ixs.extend(item)
+            else:
+                flat_ixs.append(item)
+
+        blockhash_resp = await self.client.get_latest_blockhash()
+        blockhash = blockhash_resp.value.blockhash
+
+        msg = Message(flat_ixs, payer_kp.pubkey())
+        tx  = Transaction(self._filter_signers(all_signers, msg), msg, blockhash)
+        resp = await self.client.send_transaction(
+            tx,
+            opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed),
+        )
+        return str(resp.value)
+
     async def _send_tx(self, tx, key: str = None):
         """
-        Аналог EVM sign_and_send для Solana.
-        tx может быть объектом Transaction или Message.
+        Signs and broadcasts a pre-built transaction. Equivalent of EVM sign_and_send.
+
+        Args:
+            tx  (Transaction): Transaction object with .message and .recent_blockhash fields.
+            key (str):         Base58 private key for signing. Falls back to self.KEYPAIR if omitted.
+
+        Returns:
+            dict | False: On success — { "tx": str (signature), "meta": { "symbol", "status", "signature" } }.
+                          On error or unconfirmed transaction — False.
         """
         try:
-            # 1. Подготовка ключа (Keypair)
-            # Если ключ передан как строка Base58, конвертим его в Keypair
+            # resolve signer keypair
             if key:
                 from solders.keypair import Keypair
                 signer = Keypair.from_base58_string(key)
             else:
-                signer = self.KEYPAIR # Берем дефолтный из класса
+                signer = self.KEYPAIR
 
             if not signer:
                 raise ValueError("No keypair provided for signing")
 
-            # 2. Подпись транзакции
-            # В Solana Transaction(signatures, message, blockhash)
-            # Если tx пришел как готовый объект, мы просто добавляем подпись
+            # re-sign the transaction with the resolved keypair
             if hasattr(tx, 'message'):
-                # Собираем финальную транзу с подписью
                 from solders.transaction import Transaction
                 final_tx = Transaction([signer], tx.message, tx.recent_blockhash)
             else:
-                # Если tx это список инструкций (ixns), нужно сначала собрать Transaction
-                # Но лучше передавать уже собранный объект Transaction из build_tx
                 raise ValueError("tx must be a Transaction object with message and blockhash")
 
-            # 3. Отправка (аналог send_raw_transaction)
-            # send_transaction сам делает serialize() под капотом
             resp = await self.client.send_transaction(final_tx)
-            tx_hash = str(resp.value) # Это сигнатура (хеш)
+            tx_hash = str(resp.value)
 
-            # 4. Ожидание подтверждения (аналог wait_for_transaction_receipt)
-            # В Solana используем confirm_transaction
             confirm = await self.client.confirm_transaction(resp.value)
-            
+
             if not confirm.value:
                 return False
 
-            # 5. Возвращаем результат в твоем формате
-            # tx_to_human_view для соланы напишем ниже, если нужно
             return {
                 "tx": tx_hash,
                 "meta": {
@@ -386,10 +1064,50 @@ class SOL:
                 }
             }
 
-        except Exception as e:
+        except Exception:
             return False
-    async def  _parse_transaction(self, signature: str, retries: int = 5, retry_delay: float = 2.0) -> dict:
+    async def _parse_transaction(self, signature: str, retries: int = 5, retry_delay: float = 2.0) -> dict:
+        """
+        Fetches and parses a transaction by signature using RPC getTransaction.
 
+        Args:
+            signature   (str):   Base58 transaction signature.
+            retries     (int):   Number of RPC polling attempts (transaction may not be finalised yet).
+            retry_delay (float): Delay in seconds between attempts.
+
+        Returns:
+            dict: {
+                "signature":       str,
+                "status":          "success" | "failed",
+                "error":           dict | None,       # error object from meta.err
+                "slot":            int,
+                "timestamp":       int | None,        # block unix timestamp
+                "fee_lamports":    int,
+                "fee_sol":         float,
+                "transfers": list[{                   # SOL balance changes per account
+                    "account":         str,
+                    "change_lamports": int,
+                    "change_sol":      float,
+                    "direction":       "in" | "out",
+                }],
+                "token_transfers": list[{             # SPL token balance changes
+                    "account":   str,
+                    "mint":      str,
+                    "owner":     str,
+                    "change":    float,
+                    "direction": "in" | "out",
+                    "decimals":  int,
+                }],
+                "programs": list[{                    # programs invoked in the transaction
+                    "program": str,
+                    "type":    str | None,
+                    "info":    dict | None,
+                }],
+                "tx_type": "sol_transfer" | "token_transfer" | "swap" | "unknown",
+                "summary": str,                       # human-readable transaction description
+            }
+            On error: {"error": "Transaction not found", "signature": str}
+        """
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -424,7 +1142,6 @@ class SOL:
         fee        = meta.get("fee", 0)
         err        = meta.get("err")
 
-        # Аккаунты
         account_keys = [
             acc.get("pubkey") if isinstance(acc, dict) else acc
             for acc in message.get("accountKeys", [])
@@ -444,7 +1161,6 @@ class SOL:
             "tx_type":     "unknown",
         }
 
-        # SOL балансы
         pre_balances  = meta.get("preBalances", [])
         post_balances = meta.get("postBalances", [])
         for i, (pre, post) in enumerate(zip(pre_balances, post_balances)):
@@ -499,12 +1215,54 @@ class SOL:
         elif result["token_transfers"]:
             result["tx_type"] = "swap"
 
+        tx_type = result["tx_type"]
+        status  = result["status"]
+        fee_sol = result["fee_sol"]
+
+        if tx_type == "sol_transfer":
+            out = [t for t in result["transfers"] if t["direction"] == "out"]
+            inn = [t for t in result["transfers"] if t["direction"] == "in"]
+            sender   = out[0]["account"][:8] + "…" if out else "?"
+            receiver = inn[0]["account"][:8] + "…" if inn else "?"
+            amount   = abs(out[0]["change_sol"]) if out else 0
+            summary  = (
+                f"SOL transfer {amount:.6f} SOL "
+                f"from {sender} → {receiver} | "
+                f"status: {status} | fee: {fee_sol:.6f} SOL"
+            )
+        elif tx_type == "token_transfer":
+            out = [t for t in result["token_transfers"] if t["direction"] == "out"]
+            inn = [t for t in result["token_transfers"] if t["direction"] == "in"]
+            sender   = out[0]["owner"][:8] + "…" if out else "?"
+            receiver = inn[0]["owner"][:8] + "…" if inn else "?"
+            amount   = abs(out[0]["change"]) if out else 0
+            mint     = (out[0]["mint"] or "")[:8] + "…" if out else "?"
+            summary  = (
+                f"Token transfer {amount} [{mint}] "
+                f"from {sender} → {receiver} | "
+                f"status: {status} | fee: {fee_sol:.6f} SOL"
+            )
+        elif tx_type == "swap":
+            mints = list({t["mint"] for t in result["token_transfers"] if t.get("mint")})
+            mints_str = " ↔ ".join(m[:8] + "…" for m in mints[:2]) if mints else "unknown tokens"
+            summary = (
+                f"Swap ({mints_str}) | "
+                f"status: {status} | fee: {fee_sol:.6f} SOL"
+            )
+        else:
+            prog_names = ", ".join(filter(None, programs[:3])) or "unknown"
+            summary = (
+                f"Transaction via [{prog_names}] | "
+                f"status: {status} | fee: {fee_sol:.6f} SOL"
+            )
+
+        result["summary"] = summary
         return result
 
     async def monitor(
         self,
         callback,
-        addresses: list = None,
+        addresses: list ["all"],
         ws_url: str = __SOL__WS__,
         commitment: str = "finalized",
         reconnect_delay: float = 3.0,
@@ -512,33 +1270,29 @@ class SOL:
         batch_size: int = 10,
     ):
         """
-        Monitor Solana blockchain via WebSocket for new transactions.
+        Monitors the Solana blockchain via WebSocket for incoming transactions.
 
         Args:
-            callback:     async function — всегда вызывается с raw value dict
-                          если parsed=True — дополнительно вызывается с {sig: tx}
-                          когда накопится batch_size транзакций
-            addresses:    список адресов для фильтра (пусто = все транзакции)
-            ws_url:       WebSocket endpoint (default: __SOL__WS__)
-            commitment:   "finalized" | "confirmed" | "processed"
-            reconnect_delay: секунд до переподключения при обрыве
-            parsed:       если True — дополнительно парсить пачками
-            batch_size:   сколько сигнатур накопить перед парсингом
+            callback        (async callable): Always called with the raw logs value dict.
+                                              If parsed=True, also called with {"parsed": {sig: tx_dict}}
+                                              once batch_size signatures have accumulated.
+            addresses       (list[str]):      Addresses to filter by. Empty list = subscribe to all.
+            ws_url          (str):            WebSocket endpoint or alias "mainnet" / "devnet".
+            commitment      (str):            "finalized" | "confirmed" | "processed".
+            reconnect_delay (float):          Seconds to wait before reconnecting after a drop.
+            parsed          (bool):           If True, signatures are batched and parsed via _parse_transaction.
+            batch_size      (int):            Number of signatures to accumulate before parsing the batch.
         """
         import websockets
         import json as _json
+        if ws_url == "mainnet":
+            ws_url = __SOL__WS__
+        elif ws_url == "devnet":
+            ws_url = __SOL__WS__DEVNET__
 
-        subscribe_msg = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "logsSubscribe",
-            "params": [
-                {"mentions": addresses} if addresses else "all",
-                {"commitment": commitment},
-            ],
-        }
 
         queue: list[str] = []
+        sub_map: dict[int, str] = {}  # subscription id → address
 
         sem = asyncio.Semaphore(3)
 
@@ -559,7 +1313,7 @@ class SOL:
             if parsed_batch:
                 try:
                     await callback({"parsed": parsed_batch})
-                except Exception as cb_err:
+                except Exception:
                     pass
 
         while True:
@@ -569,8 +1323,33 @@ class SOL:
                     ping_interval=20,
                     ping_timeout=30,
                 ) as ws:
-                    await ws.send(_json.dumps(subscribe_msg))
-                    await ws.recv()  # skip subscription confirmation
+                    if addresses:
+                        for i, addr in enumerate(addresses, start=1):
+                            msg = {
+                                "jsonrpc": "2.0",
+                                "id": i,
+                                "method": "logsSubscribe",
+                                "params": [
+                                    {"mentions": [addr]},
+                                    {"commitment": commitment},
+                                ],
+                            }
+                            await ws.send(_json.dumps(msg))
+                        # read subscription confirmations and map sub_id → address
+                        for addr in addresses:
+                            resp = _json.loads(await ws.recv())
+                            sub_id = resp.get("result")
+                            req_id = resp.get("id")
+                            if sub_id and req_id:
+                                sub_map[sub_id] = addresses[req_id - 1]
+                    else:
+                        await ws.send(_json.dumps({
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "logsSubscribe",
+                            "params": ["all", {"commitment": commitment}],
+                        }))
+                        await ws.recv()  # skip confirmation
 
                     while True:
                         raw = await ws.recv()
@@ -583,6 +1362,11 @@ class SOL:
                         signature = value.get("signature")
                         if not signature:
                             continue
+
+                        # attach triggering address if known
+                        sub_id = params.get("subscription")
+                        if sub_id and sub_id in sub_map:
+                            value["address"] = sub_map[sub_id]
 
                         try:
                             await callback(value)
@@ -599,15 +1383,20 @@ class SOL:
             except Exception as e:
                 print(f"[monitor] error: {e}")
                 await asyncio.sleep(reconnect_delay)
-            except (websockets.ConnectionClosed, websockets.InvalidStatusCode):
-                await asyncio.sleep(reconnect_delay)
-            except Exception as e:
-                print(f"[monitor] error: {e}")
-                await asyncio.sleep(reconnect_delay)
 
     async def get_transactions(self, limit: int = 10, before: str = None) -> list[dict]:
-       
-        # 1. Получаем сигнатуры
+        """
+        Returns the most recent transactions for the wallet as parsed dicts.
+
+        Args:
+            limit  (int): Number of transactions to fetch (max 1000, default 10).
+            before (str): Signature to paginate from — returns only transactions before it.
+
+        Returns:
+            list[dict]: List of _parse_transaction results for each signature.
+                        Failed individual parses are represented as {"error": str}.
+        """
+        # fetch signatures
         params = [str(self.get_pubkey()), {"limit": limit}]
         if before:
             params[1]["before"] = before
@@ -625,7 +1414,6 @@ class SOL:
 
         signatures = [s["signature"] for s in (data.get("result") or [])]
 
-        # 2. Парсим каждую параллельно
         import asyncio
         tasks = [self._parse_transaction(sig) for sig in signatures]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -636,40 +1424,4 @@ class SOL:
         ]
 
 
-
-# if __name__ == "__main__":
-#     s = SOL()
-#     instruction = [Instruction(
-#     Instruction {
-#         program_id: 11111111111111111111111111111111,
-#         accounts: [
-#             AccountMeta {
-#                 pubkey: C3MhUqKFRkkTRBRZcH7EKoD8c1iose9T3tPb7qiytzxs,
-#                 is_signer: true,
-#                 is_writable: true,
-#             },
-#             AccountMeta {
-#                 pubkey: C3MhUqKFRkkTRBRZcH7EKoD8c1iose9T3tPb7qiytzxs,
-#                 is_signer: false,
-#                 is_writable: true,
-#             },
-#         ],
-#         data: [
-#             2,
-#             0,
-#             0,
-#             0,
-#             0,
-#             225,
-#             245,
-#             5,
-#             0,
-#             0,
-#             0,
-#             0,
-#         ],
-#     },
-# )]
-
-#     run = s.sign_and_send()
 

@@ -1,5 +1,89 @@
 import json
+from dataclasses import dataclass
 from solders.pubkey import Pubkey
+
+
+@dataclass(frozen=True)
+class EVMChain:
+    name: str
+    chain_id: int
+    rpc: str
+    explorer: str
+    currency: str = "ETH"
+    ws: str = ""
+
+
+ETHEREUM  = EVMChain("Ethereum",  1,     "ETH",  "https://eth.llamarpc.com",                        "https://etherscan.io",      "wss://eth.llamarpc.com")
+BSC       = EVMChain("BSC",       56,    "BNB",  "https://bsc-dataseed.binance.org",                "https://bscscan.com",       "wss://bsc-ws-node.nariox.org")
+POLYGON   = EVMChain("Polygon",   137,   "MATIC", "https://polygon-rpc.com",                        "https://polygonscan.com",   "wss://polygon-bor.publicnode.com")
+ARBITRUM  = EVMChain("Arbitrum",  42161, "ETH",  "https://arb1.arbitrum.io/rpc",                    "https://arbiscan.io",       "wss://arbitrum-one.publicnode.com")
+OPTIMISM  = EVMChain("Optimism",  10,    "ETH",  "https://mainnet.optimism.io",                     "https://optimistic.etherscan.io", "wss://optimism.publicnode.com")
+BASE      = EVMChain("Base",      8453,  "ETH",  "https://mainnet.base.org",                        "https://basescan.org",      "wss://base.publicnode.com")
+AVALANCHE = EVMChain("Avalanche", 43114, "AVAX", "https://api.avax.network/ext/bc/C/rpc",           "https://snowtrace.io",      "wss://avalanche-c-chain.publicnode.com")
+FANTOM    = EVMChain("Fantom",    250,   "FTM",  "https://rpc.ftm.tools",                           "https://ftmscan.com",       "")
+ZKSYNC    = EVMChain("zkSync",    324,   "ETH",  "https://mainnet.era.zksync.io",                   "https://explorer.zksync.io", "wss://mainnet.era.zksync.io/ws")
+LINEA     = EVMChain("Linea",     59144, "ETH",  "https://rpc.linea.build",                         "https://lineascan.build",   "wss://rpc.linea.build")
+SCROLL    = EVMChain("Scroll",    534352,"ETH",  "https://rpc.scroll.io",                           "https://scrollscan.com",    "wss://wss-rpc.scroll.io/ws")
+
+# Testnets
+BSC_TESTNET      = EVMChain("BSC Testnet",      97,    "tBNB", "https://data-seed-prebsc-1-s1.binance.org:8545", "https://testnet.bscscan.com", "")
+SEPOLIA          = EVMChain("Sepolia",          11155111,"ETH","https://rpc.sepolia.org",                         "https://sepolia.etherscan.io",  "")
+ARBITRUM_SEPOLIA = EVMChain("Arbitrum Sepolia", 421614, "ETH", "https://sepolia-rollup.arbitrum.io/rpc",          "https://sepolia.arbiscan.io",   "")
+
+
+@dataclass(frozen=True)
+class SOLNetwork:
+    name: str
+    rpc: str
+    ws: str
+    explorer: str
+    currency: str = "SOL"
+
+
+SOL_MAINNET = SOLNetwork("Mainnet", "https://api.mainnet-beta.solana.com", "wss://api.mainnet-beta.solana.com", "https://solscan.io")
+SOL_DEVNET  = SOLNetwork("Devnet",  "https://api.devnet.solana.com",       "wss://api.devnet.solana.com",       "https://solscan.io?cluster=devnet")
+SOL_TESTNET = SOLNetwork("Testnet", "https://api.testnet.solana.com",      "wss://api.testnet.solana.com",      "https://solscan.io?cluster=testnet")
+
+
+@dataclass()
+class TONNetwork:
+    name: str
+    api_url: str
+    
+    explorer: str
+    api_key: str = ""
+    currency: str = "TON"
+
+
+TON_MAINNET = TONNetwork("Mainnet", "https://toncenter.com/api/v2",         "https://tonviewer.com")
+TON_TESTNET = TONNetwork("Testnet", "https://testnet.toncenter.com/api/v2", "https://testnet.tonviewer.com")
+
+
+@dataclass(frozen=True)
+class TRXNetwork:
+    name: str
+    rpc: str
+    explorer: str
+    currency: str = "TRX"
+
+TRX_MAINNET = TRXNetwork("Mainnet", "https://api.trongrid.io",    "https://tronscan.org")
+TRX_SHASTA  = TRXNetwork("Shasta",  "https://api.shasta.trongrid.io", "https://shasta.tronscan.org")
+TRX_NILE    = TRXNetwork("Nile",    "https://nile.trongrid.io",   "https://nile.tronscan.org")
+
+
+
+@dataclass(frozen=True)
+class BTCNetwork:
+    name: str
+    testnet: bool
+    explorer: str
+    currency: str = "BTC"
+
+
+BTC_MAINNET = BTCNetwork("Mainnet", False, "https://mempool.space")
+BTC_TESTNET = BTCNetwork("Testnet", True,  "https://mempool.space/testnet")
+
+
 __ALLOW_CHAINS__ = [
     56,  # BSC Mainnet
     97,  # BSC Testnet
@@ -14,6 +98,21 @@ __ALLOW_CHAINS__ = [
 
 __SOL__NATIVE__ = "So11111111111111111111111111111111111111111"
 __SOL__WS__ = "wss://api.mainnet-beta.solana.com"
+__SOL__WS__DEVNET__ = "wss://api.devnet.solana.com"
+
+__SOL__EXPLORERS__ = {
+    "mainnet": {
+        "solscan":  "https://solscan.io",
+        "solana":   "https://explorer.solana.com",
+        "xray":     "https://xray.helius.xyz",
+        "solanafm": "https://solana.fm",
+    },
+    "devnet": {
+        "solscan":  "https://solscan.io?cluster=devnet",
+        "solana":   "https://explorer.solana.com?cluster=devnet",
+        "solanafm": "https://solana.fm?cluster=devnet-solana",
+    },
+}
 __NULL_ADDRESS__ = "0x0000000000000000000000000000000000000000"
 __MULTICALL3__ = "0xcA11bde05977b3631167028862bE2a173976CA11"
 __MULTICALL3_ABI__ = [

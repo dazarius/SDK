@@ -7,8 +7,8 @@ from typing import Optional, Union, Dict, Any, List
 from tonsdk.contract.wallet import WalletVersionEnum, Wallets
 from tonsdk.utils import to_nano, from_nano, bytes_to_b64str, Address
 from tonsdk.boc import Cell
-from tonutils.wallet import WalletV5R1
-from tonutils.client import ToncenterV3Client
+from tonutils.contracts.wallet import WalletV5R1
+from tonutils.clients.http.clients.toncenter import ToncenterClient as ToncenterV3Client
 from tonsdk.crypto import mnemonic_new, mnemonic_to_wallet_key
 
 from pytoniq_core import begin_cell as pbegin_cell, Address as PAddress
@@ -29,10 +29,14 @@ class TON:
     """
 
     WALLET_VERSIONS = {
+        "v2r1": WalletVersionEnum.v2r1,
+        "v2r2": WalletVersionEnum.v2r2,
         "v3r1": WalletVersionEnum.v3r1,
         "v3r2": WalletVersionEnum.v3r2,
+        "v4r1": WalletVersionEnum.v4r1,
         "v4r2": WalletVersionEnum.v4r2,
-        "wr5": "wr5",  # handled separately via tonutils WalletV5R1
+        "hv2":  WalletVersionEnum.hv2,
+        "wr5":  "wr5",  # handled separately via tonutils WalletV5R1
     }
 
     def __init__(
@@ -40,8 +44,16 @@ class TON:
         api_url: str = "https://toncenter.com/api/v2",
         api_key: Optional[str] = None,
         mnemonics: Optional[List[str]] = None,
-        wallet_version: str = "v4r2",
+        wallet_version: str = DEFAULT_VERSION,
     ):
+        """
+        Args:
+            api_url        (str):       TonCenter API v2 base URL. Default: mainnet.
+            api_key        (str):       TonCenter API key for higher rate limits. Optional.
+            mnemonics      (list[str]): 24-word mnemonic phrase. If provided, wallet is loaded immediately.
+            wallet_version (str):       Wallet contract version — 'v3r1', 'v3r2', 'v4r2', 'wr5'.
+                                        Default: 'wr5' (WalletV5R1).
+        """
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
         self.wallet = None
@@ -56,19 +68,34 @@ class TON:
             self.set_wallet(mnemonics, wallet_version)
 
     def _get_headers(self) -> dict:
+        """
+        Builds HTTP headers for TonCenter API requests.
+
+        Returns:
+            dict: Headers with Content-Type and optional X-API-Key.
+        """
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["X-API-Key"] = self.api_key
         return headers
     
-    def set_wallet(self, mnemonics: List[str], version: str = "v4r2"):
-        """Load wallet from mnemonic phrase (24 words list).
-        Supported versions: 'v3r1', 'v3r2', 'v4r2', 'wr5' (WalletV5R1)."""
+    def set_wallet(self, mnemonics: Union[str, List[str]], version: str = "v4r2"):
+        """
+        Loads a wallet from a mnemonic phrase and sets it as the active wallet.
+
+        Args:
+            mnemonics (str | list[str]): 24-word mnemonic — either a list or a space-separated string.
+            version   (str):             Wallet contract version: 'v3r1', 'v3r2', 'v4r2', 'wr5'.
+                                         'wr5' uses tonutils WalletV5R1; others use tonsdk Wallets.
+        """
+        if isinstance(mnemonics, str):
+            mnemonics = mnemonics.split()
         self.mnemonics = mnemonics
         self.wallet_version = version
 
         if version == "wr5":
-            self._v5_client = ToncenterV3Client(api_key=self.api_key)
+            from tonutils.clients.http.clients.toncenter import NetworkGlobalID
+            self._v5_client = ToncenterV3Client(NetworkGlobalID.MAINNET, api_key=self.api_key)
             wallet_v5, pub_k, priv_k, _mnemonics = WalletV5R1.from_mnemonic(
                 client=self._v5_client, mnemonic=mnemonics,
             )
@@ -88,9 +115,18 @@ class TON:
         self,
         api_url: Optional[str] = None,
         api_key: Optional[str] = None,
-        mnemonics: Optional[List[str]] = None,
+        mnemonics: Optional[Union[str, List[str]]] = None,
         wallet_version: Optional[str] = DEFAULT_VERSION,
     ):
+        """
+        Updates instance parameters at runtime without recreating the object.
+
+        Args:
+            api_url        (str):             New TonCenter API base URL.
+            api_key        (str):             New API key.
+            mnemonics      (str | list[str]): New mnemonic — triggers set_wallet() if provided.
+            wallet_version (str):             New wallet version to use when loading from mnemonics.
+        """
         if api_url:
             self.api_url = api_url.rstrip("/")
         if api_key:
@@ -102,8 +138,21 @@ class TON:
 
     @staticmethod
     def gen_wallet(version: str = "wr5") -> dict:
-        """Generate a new TON wallet. Returns mnemonics, address, raw address, and WR5 address.
-        Supported versions: 'v3r1', 'v3r2', 'v4r2' (default), 'wr5' (WalletV5R1)."""
+        """
+        Generates a new random TON wallet.
+
+        Args:
+            version (str): Wallet contract version: 'v3r1', 'v3r2', 'v4r2', 'wr5'. Default: 'wr5'.
+
+        Returns:
+            dict: {
+                "mnemonics": str | list,   # 24-word mnemonic (string for legacy, list for wr5)
+                "address":   str,          # user-friendly bounceable address
+                "raw_address": str,        # raw workchain:hex address
+                "WR5":       str,          # WalletV5R1 user-friendly address
+                "key":       bytes,        # private key bytes (legacy versions only)
+            }
+        """
         client = ToncenterV3Client()
         version_map = {
             "v3r1": WalletVersionEnum.v3r1,
@@ -114,7 +163,7 @@ class TON:
         if version == "wr5":
             wallet_v5, pub_k, priv_k, mnemonics = WalletV5R1.create(client=client)
             return {
-                "mnemonics": " ".join(mnemonics),
+                "mnemonics": mnemonics,
                 "address": wallet_v5.address.to_str(True, True, False),
                 "raw_address": wallet_v5.address.to_str(is_user_friendly=False),
                 "WR5": wallet_v5.address.to_str(True, True, False),
@@ -135,7 +184,19 @@ class TON:
         }
 
     def get_address(self, bounceable: bool = True) -> str:
-        """Get the wallet address in user-friendly format."""
+        """
+        Returns the active wallet address in user-friendly Base64url format.
+
+        Args:
+            bounceable (bool): If True, returns a bounceable address (default for smart contracts).
+                               If False, returns a non-bounceable address (safer for plain wallets).
+
+        Returns:
+            str: User-friendly TON address string.
+
+        Raises:
+            ValueError: If no wallet has been loaded.
+        """
         if not self.wallet:
             raise ValueError("Wallet not set. Use set_wallet() first.")
 
@@ -151,8 +212,83 @@ class TON:
             is_bounceable=bounceable,
         )
 
-    async def get_balance(self, address: Optional[str] = None) -> float:
-        """Get TON balance in TON (not nanotons)."""
+    def get_all_addresses(self, bounceable: bool = True) -> dict:
+        """
+        Derives addresses for every supported wallet version from the current mnemonic.
+        Useful for checking which version holds funds.
+
+        Args:
+            bounceable (bool): Address bounceable flag (see get_address).
+
+        Returns:
+            dict: { version_str: address_str | None }
+                  None if derivation failed for a given version.
+
+        Raises:
+            ValueError: If no mnemonic has been set.
+        """
+        if not self.mnemonics:
+            raise ValueError("Wallet not set. Use set_wallet() first.")
+        result = {}
+        for version in self.WALLET_VERSIONS:
+            try:
+                wv = self.WALLET_VERSIONS[version]
+                if version == "wr5":
+                    from tonutils.clients.http.clients.toncenter import NetworkGlobalID
+                    client = ToncenterV3Client(NetworkGlobalID.MAINNET, api_key=self.api_key)
+                    wallet_v5, _, _, _ = WalletV5R1.from_mnemonic(client=client, mnemonic=self.mnemonics)
+                    result[version] = wallet_v5.address.to_str(
+                        is_user_friendly=True, is_url_safe=True, is_bounceable=bounceable
+                    )
+                else:
+                    _, _, _, wallet = Wallets.from_mnemonics(
+                        mnemonics=self.mnemonics, version=wv, workchain=0
+                    )
+                    result[version] = wallet.address.to_string(
+                        is_user_friendly=True, is_url_safe=True, is_bounceable=bounceable
+                    )
+            except Exception:
+                result[version] = None
+        return result
+
+    def sign_msg(self, msg: str) -> str:
+        """
+        Signs an arbitrary UTF-8 message with the wallet's Ed25519 private key.
+
+        Args:
+            msg (str): Message to sign.
+
+        Returns:
+            str: 64-byte Ed25519 signature as a hex string.
+
+        Raises:
+            ValueError: If no wallet / private key has been loaded.
+        """
+        if not self._priv_k:
+            raise ValueError("Wallet not set")
+        import nacl.signing
+        signing_key = nacl.signing.SigningKey(self._priv_k)
+        signed = signing_key.sign(msg.encode("utf-8"))
+        return signed.signature.hex()
+
+    async def get_balance(self, address: Optional[str] = None) -> dict:
+        """
+        Fetches the TON balance for an address.
+
+        Args:
+            address (str): TON address to query. Defaults to the active wallet address.
+
+        Returns:
+            dict: {
+                "symbol":      "TON",
+                "decimals":    9,
+                "balance":     float,  # amount in TON
+                "raw_balance": int,    # amount in nanotons
+            }
+
+        Raises:
+            ValueError: If the RPC call fails.
+        """
         if not address:
             address = self.get_address()
         async with httpx.AsyncClient() as client:
@@ -175,10 +311,14 @@ class TON:
 
     async def get_balance_batch(self, address_list: list) -> dict:
         """
-        Get TON balances for multiple addresses in parallel.
+        Fetches TON balances for multiple addresses concurrently.
+
+        Args:
+            address_list (list[str]): List of TON address strings.
 
         Returns:
-            dict {address: {"symbol": "TON", "decimals": 9, "balance": float, "raw_balance": int}}
+            dict: { address: {"symbol": "TON", "decimals": 9, "balance": float, "raw_balance": int} }
+                  On error for a given address returns balance 0.0 / raw_balance 0.
         """
         async def fetch(address):
             try:
@@ -200,7 +340,19 @@ class TON:
         return dict(results)
 
     async def get_wallet_info(self, address: Optional[str] = None) -> dict:
-        """Get detailed wallet information (balance, seqno, state, etc.)."""
+        """
+        Returns detailed wallet information from TonCenter getWalletInformation.
+
+        Args:
+            address (str): TON address to query. Defaults to the active wallet address.
+
+        Returns:
+            dict: Raw TonCenter result containing fields like balance, seqno,
+                  wallet_type, account_state, last_transaction_id, etc.
+
+        Raises:
+            ValueError: If the RPC call fails.
+        """
         if not address:
             address = self.get_address()
         async with httpx.AsyncClient() as client:
@@ -215,7 +367,16 @@ class TON:
             raise ValueError(f"Failed to get wallet info: {data}")
 
     async def get_seqno(self, address: Optional[str] = None) -> int:
-        """Get current sequence number for the wallet."""
+        """
+        Returns the current sequence number (seqno) of the wallet.
+        Required when building legacy transactions (v3/v4) to prevent replay attacks.
+
+        Args:
+            address (str): TON address to query. Defaults to the active wallet address.
+
+        Returns:
+            int: Current seqno. Returns 0 if not yet deployed.
+        """
         info = await self.get_wallet_info(address)
         return info.get("seqno", 0)
 
@@ -266,7 +427,8 @@ class TON:
             payload=payload,
         )
 
-        boc = bytes_to_b64str(query["message"].to_boc(False))
+        boc_bytes = query["message"].to_boc(False)
+        boc = bytes_to_b64str(boc_bytes)
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -275,14 +437,18 @@ class TON:
                 headers=self._get_headers(),
             )
             data = resp.json()
-            if data.get("ok"):
-                return {
-                    "status": "sent",
-                    "result": data["result"],
-                    "amount": amount,
-                    "to": to,
-                }
-            raise ValueError(f"Transfer failed: {data}")
+            if not data.get("ok"):
+                raise ValueError(f"Transfer failed: {data}")
+
+        address = self.get_address()
+        for _ in range(10):
+            await asyncio.sleep(2)
+            txs = await self.get_transactions(address=address, limit=5)
+            if txs:
+                tx_hash = txs[0].get("transaction_id", {}).get("hash")
+                if tx_hash:
+                    return tx_hash
+        return None
 
     def _build_jetton_transfer_body(
         self,
@@ -292,7 +458,20 @@ class TON:
         forward_amount: int = 0,
         comment: Optional[str] = None,
     ) -> Cell:
-        """Build Jetton transfer message body (TEP-74 standard) using tonsdk Cell."""
+        """
+        Builds a Jetton transfer message body cell (TEP-74, op 0x0F8A7EA5) using tonsdk.
+        Used for legacy wallet versions (v3r1, v3r2, v4r2).
+
+        Args:
+            to               (str): Recipient owner address (not their Jetton wallet).
+            amount           (int): Jetton amount in the smallest unit (raw, decimals already applied).
+            response_address (str): Address that receives the excess TON response.
+            forward_amount   (int): Nanotons forwarded with the transfer notification. Default: 0.
+            comment          (str): Optional text comment attached as forward payload.
+
+        Returns:
+            Cell: Serialised tonsdk Cell ready to attach as a transfer payload.
+        """
         body = Cell()
         body.bits.write_uint(0x0F8A7EA5, 32)   # op::transfer
         body.bits.write_uint(0, 64)              # query_id
@@ -321,7 +500,20 @@ class TON:
         forward_amount: int = 0,
         comment: Optional[str] = None,
     ):
-        """Build Jetton transfer message body (TEP-74 standard) using pytoniq_core Cell for WR5."""
+        """
+        Builds a Jetton transfer message body cell (TEP-74, op 0x0F8A7EA5) using pytoniq_core.
+        Used for WalletV5R1 (wr5) which requires pytoniq_core cells.
+
+        Args:
+            to               (str): Recipient owner address (not their Jetton wallet).
+            amount           (int): Jetton amount in the smallest unit (raw, decimals already applied).
+            response_address (str): Address that receives the excess TON response.
+            forward_amount   (int): Nanotons forwarded with the transfer notification. Default: 0.
+            comment          (str): Optional text comment attached as forward payload via snake_string.
+
+        Returns:
+            pytoniq_core.Cell: Serialised cell ready to use as a transfer body.
+        """
         builder = (
             pbegin_cell()
             .store_uint(0x0F8A7EA5, 32)           # op::transfer
@@ -436,11 +628,15 @@ class TON:
         self, jetton_master: str, owner: Optional[str] = None
     ) -> Optional[str]:
         """
-        Get the Jetton wallet address for a given owner from the master contract.
+        Queries the Jetton master contract to find the Jetton wallet address for an owner.
+        Each owner has a unique personal Jetton wallet derived from the master contract.
 
         Args:
-            jetton_master: Jetton master contract address.
-            owner: Owner address (defaults to current wallet).
+            jetton_master (str): Jetton master contract address.
+            owner         (str): Owner address to derive the wallet for. Defaults to active wallet.
+
+        Returns:
+            str | None: The Jetton wallet address for the owner, or None if the call failed.
         """
         if not owner:
             owner = self.get_address()
@@ -465,7 +661,16 @@ class TON:
     async def get_transactions(
         self, address: Optional[str] = None, limit: int = 10
     ) -> list:
-        """Get recent transactions for the address."""
+        """
+        Fetches raw recent transactions for an address from TonCenter getTransactions.
+
+        Args:
+            address (str): TON address to query. Defaults to the active wallet address.
+            limit   (int): Maximum number of transactions to return. Default: 10.
+
+        Returns:
+            list[dict]: Raw TonCenter transaction dicts. Empty list on failure.
+        """
         if not address:
             address = self.get_address()
         async with httpx.AsyncClient() as client:
@@ -480,7 +685,19 @@ class TON:
             return []
 
     async def get_jetton_data(self, jetton_master: str) -> dict:
-        """Get Jetton metadata (name, symbol, decimals, total supply)."""
+        """
+        Calls get_jetton_data on the Jetton master contract to retrieve token metadata.
+
+        Args:
+            jetton_master (str): Jetton master contract address.
+
+        Returns:
+            dict: Raw TonCenter result — typically contains total_supply, mintable,
+                  admin_address, jetton_content, and jetton_wallet_code stack values.
+
+        Raises:
+            ValueError: If the RPC call fails.
+        """
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{self.api_url}/runGetMethod",
@@ -513,7 +730,16 @@ class TON:
 
     @staticmethod
     def _decode_comment(msg_data: dict) -> Optional[str]:
-        """Extract human-readable comment from msg_data."""
+        """
+        Extracts a human-readable text comment from a TonCenter msg_data object.
+        Handles both msg.dataText (Base64 UTF-8) and msg.dataRaw (BOC cell with op=0).
+
+        Args:
+            msg_data (dict): The msg_data field from a TonCenter transaction message.
+
+        Returns:
+            str | None: Decoded text comment, or None if not present / not decodable.
+        """
         if not msg_data:
             return None
         dtype = msg_data.get("@type", "")
@@ -547,7 +773,17 @@ class TON:
 
     @staticmethod
     def _decode_body_op(msg_data: dict) -> Optional[int]:
-        """Read the first 32-bit opcode from a raw message body."""
+        """
+        Reads the first 32-bit opcode from a raw message body cell.
+        Used to identify TEP-74 Jetton ops, NFT ops, or arbitrary contract calls.
+
+        Args:
+            msg_data (dict): The msg_data field from a TonCenter transaction message
+                             (must have @type == "msg.dataRaw").
+
+        Returns:
+            int | None: The opcode as an integer, or None if not decodable.
+        """
         if not msg_data or msg_data.get("@type") != "msg.dataRaw":
             return None
         body_b64 = msg_data.get("body", "")
@@ -564,7 +800,19 @@ class TON:
 
     @classmethod
     def _parse_jetton_body(cls, msg_data: dict) -> Optional[dict]:
-        """Try to decode a Jetton transfer / notification body. Returns parsed fields or None."""
+        """
+        Attempts to decode a known Jetton / NFT operation body from a raw message cell.
+        Supports: jetton_transfer, jetton_transfer_notification, jetton_internal_transfer,
+                  jetton_burn, nft_transfer, and other TEP-74/TEP-62 opcodes.
+
+        Args:
+            msg_data (dict): The msg_data field from a TonCenter transaction message
+                             (must have @type == "msg.dataRaw").
+
+        Returns:
+            dict | None: Parsed fields including op, op_name, and opcode-specific data
+                         (jetton_amount, destination, sender, query_id, etc.), or None if not decodable.
+        """
         if not msg_data or msg_data.get("@type") != "msg.dataRaw":
             return None
         body_b64 = msg_data.get("body", "")
@@ -651,7 +899,25 @@ class TON:
 
     @staticmethod
     def _parse_message(msg: dict) -> dict:
-        """Parse a single in_msg / out_msg into a clean dict."""
+        """
+        Normalises a single in_msg or out_msg object from TonCenter into a clean flat dict.
+
+        Args:
+            msg (dict): Raw message dict from a TonCenter transaction.
+
+        Returns:
+            dict: {
+                "source":        str,
+                "destination":   str,
+                "value":         int,    # nanotons
+                "value_ton":     float,  # TON
+                "fwd_fee":       int,    # nanotons
+                "ihr_fee":       int,    # nanotons
+                "created_lt":    str,    # logical time
+                "body_hash":     str,
+                "msg_data_type": str,    # @type of msg_data, e.g. "msg.dataRaw"
+            }
+        """
         if not msg:
             return {}
         value_nano = int(msg.get("value", 0) or 0)
@@ -670,23 +936,42 @@ class TON:
         }
 
     @classmethod
-    async def parse_transaction(cls, raw_tx: dict, get_price:bool = False, price:float =None) -> dict:
+    async def parse_transaction(cls, raw_tx: dict, get_price: bool = False, price: float = None) -> dict:
         """
-        Parse a single raw TON transaction (as returned by TonCenter ``getTransactions``)
-        into a human-readable dict.
+        Parses a single raw TON transaction (as returned by TonCenter getTransactions)
+        into a structured human-readable dict.
 
-        Detects:
-          - native TON transfers
-          - Jetton transfers / notifications / burns
-          - NFT transfers
-          - contract interactions (by opcode)
-          - text comments
+        Detects transaction categories: native_transfer, jetton_transfer,
+        jetton_transfer_notification, jetton_burn, nft_transfer, contract_call, external, other.
 
         Args:
-            raw_tx: A single transaction dict from TonCenter API v2.
+            raw_tx    (dict):  A single transaction dict from TonCenter API v2.
+            get_price (bool):  If True, fetches the current TON/USD price from CoinGecko
+                               and appends fee_in_usd and total_out_value_usd fields.
+            price     (float): Pre-fetched TON/USD price. If provided, skips CoinGecko call.
 
         Returns:
-            dict with parsed transaction details.
+            dict: {
+                "tx_hash":              str,
+                "lt":                   str,            # logical time
+                "timestamp":            int,            # unix timestamp
+                "datetime_utc":         str,
+                "fee":                  int,            # nanotons
+                "fee_ton":              float,
+                "storage_fee":          int,
+                "other_fee":            int,
+                "tx_category":          str,
+                "opcode":               str | None,     # hex opcode of in_msg
+                "in_msg":               dict,           # normalised incoming message
+                "out_msgs":             list[dict],     # normalised outgoing messages
+                "out_msgs_count":       int,
+                "total_out_value":      int,            # nanotons
+                "total_out_value_ton":  float,
+                "comment":              str | None,
+                "jetton":               dict | None,    # present if Jetton op detected
+                "fee_in_usd":           str | None,     # present if price provided
+                "total_out_value_usd":  str | None,     # present if price provided
+            }
         """
         tx_id = raw_tx.get("transaction_id", {})
         utime = raw_tx.get("utime", 0)
@@ -777,18 +1062,20 @@ class TON:
         self,
         address: Optional[str] = None,
         limit: int = 10,
-        get_price:bool = False,
-        price:float = None
+        get_price: bool = False,
+        price: float = None
     ) -> List[dict]:
         """
-        Fetch recent transactions for *address* and return them parsed.
+        Fetches recent transactions and returns them fully parsed via parse_transaction.
 
         Args:
-            address: TON address (defaults to current wallet).
-            limit: Max number of transactions to fetch.
+            address   (str):   TON address to query. Defaults to the active wallet address.
+            limit     (int):   Maximum number of transactions to fetch. Default: 10.
+            get_price (bool):  If True, appends USD values using a live CoinGecko price.
+            price     (float): Pre-fetched TON/USD price to use instead of CoinGecko.
 
         Returns:
-            List of parsed transaction dicts.
+            list[dict]: List of parse_transaction results (see parse_transaction for the schema).
         """
         raw_txs = await self.get_transactions(address=address, limit=limit)
         return [await self.parse_transaction(raw_tx=tx, price = price) for tx in raw_txs]
@@ -800,20 +1087,61 @@ class TON:
         limit: int = 50,
     ) -> Optional[dict]:
         """
-        Find a specific transaction by its hash among recent transactions
-        for *address* and return it parsed.
+        Finds a specific transaction by hash in recent history and returns it parsed.
+        Does not retry — use parse_tx_by_hash if the transaction may not be indexed yet.
 
         Args:
-            tx_hash: Transaction hash to look for.
-            address: TON address to search in (defaults to current wallet).
-            limit: How many recent transactions to scan.
+            tx_hash (str): Transaction hash (Base64) to look for.
+            address (str): TON address to search in. Defaults to the active wallet.
+            limit   (int): How many recent transactions to scan. Default: 50.
 
         Returns:
-            Parsed transaction dict or None if not found.
+            dict | None: Parsed transaction dict, or None if not found in the scanned range.
         """
         raw_txs = await self.get_transactions(address=address, limit=limit)
         for tx in raw_txs:
             tid = tx.get("transaction_id", {})
             if tid.get("hash") == tx_hash:
                 return self.parse_transaction(tx)
+        return None
+
+    async def parse_tx_by_hash(
+        self,
+        tx_hash: str,
+        address: Optional[str] = None,
+        retries: int = 5,
+        retry_delay: float = 2.0,
+    ) -> Optional[dict]:
+        """
+        Finds and parses a transaction by its hash with automatic retries.
+        Accepts both hex (64-char) and Base64 hash formats — converts hex to Base64 internally.
+        Useful right after broadcasting when the transaction may not be indexed yet.
+
+        Args:
+            tx_hash     (str):   Transaction hash — hex (64 chars) or Base64 string.
+            address     (str):   TON address to search in. Defaults to the active wallet.
+            retries     (int):   Number of polling attempts if not found. Default: 5.
+            retry_delay (float): Seconds to wait between attempts. Default: 2.0.
+
+        Returns:
+            dict | None: Parsed transaction dict (see parse_transaction), or None if not found.
+        """
+        import base64
+
+        if not address:
+            address = self.get_address()
+
+        if all(c in "0123456789abcdefABCDEF" for c in tx_hash) and len(tx_hash) == 64:
+            tx_hash_b64 = base64.b64encode(bytes.fromhex(tx_hash)).decode()
+        else:
+            tx_hash_b64 = tx_hash
+
+        for attempt in range(retries):
+            raw_txs = await self.get_transactions(address=address, limit=50)
+            for tx in raw_txs:
+                tid = tx.get("transaction_id", {})
+                if tid.get("hash") == tx_hash_b64:
+                    return await self.parse_transaction(tx)
+            if attempt < retries - 1:
+                await asyncio.sleep(retry_delay)
         return None

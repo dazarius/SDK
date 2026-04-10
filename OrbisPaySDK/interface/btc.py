@@ -358,7 +358,10 @@ class BTC:
 
     def set_private_key(self, private_key: str):
         """
-        Set private key (WIF format). Clears any mnemonic state.
+        Sets the wallet private key in WIF format. Clears any existing mnemonic/HD state.
+
+        Args:
+            private_key (str): WIF-encoded private key string.
         """
         self.mnemonics = None
         self._seed = None
@@ -378,6 +381,17 @@ class BTC:
         address_type: Optional[str] = None,
         testnet: Optional[bool] = None,
     ):
+        """
+        Updates instance parameters at runtime. Triggers wallet reload if mnemonics or key provided.
+
+        Args:
+            private_key   (str):             WIF private key. Applied if mnemonics not provided.
+            mnemonics     (str | list[str]):  New mnemonic — reloads HD wallet via from_mnemonic().
+            passphrase    (str):             BIP39 passphrase to use with mnemonics.
+            address_index (int):             HD derivation address index.
+            address_type  (str):             'bip44', 'bip49', or 'bip84'.
+            testnet       (bool):            Switch between mainnet/testnet.
+        """
         if testnet is not None:
             self.testnet = testnet
         if passphrase is not None:
@@ -420,7 +434,17 @@ class BTC:
     # ========================= Address / Info =========================
 
     def get_address(self) -> str:
-        """Get the current active address."""
+        """
+        Returns the current active address.
+        Prefers the HD-derived address when a mnemonic is loaded,
+        otherwise returns the P2PKH address from the raw key.
+
+        Returns:
+            str: Bitcoin address string.
+
+        Raises:
+            ValueError: If no key or mnemonic is set.
+        """
         if self._derived_info:
             return self._derived_info["address"]
         if not self.key:
@@ -428,13 +452,36 @@ class BTC:
         return self.key.address
 
     def get_segwit_address(self) -> str:
-        """Get the SegWit (P2SH-P2WPKH) address from the bit Key."""
+        """
+        Returns the wrapped SegWit (P2SH-P2WPKH) address from the bit Key.
+
+        Returns:
+            str: P2SH-wrapped SegWit address (starts with 3 on mainnet).
+
+        Raises:
+            ValueError: If no key is set.
+        """
         if not self.key:
             raise ValueError("No key set.")
         return self.key.segwit_address
 
     def get_wallet_info(self) -> dict:
-        """Get full info about the current wallet state."""
+        """
+        Returns a summary of the current wallet state.
+
+        Returns:
+            dict: {
+                "testnet":       bool,
+                "has_key":       bool,
+                "has_mnemonic":  bool,
+                "address_p2pkh": str,       # legacy address (if key set)
+                "address_segwit": str,      # P2SH-P2WPKH address (if key set)
+                "hd_address":    str,       # derived address (if mnemonic set)
+                "hd_path":       str,       # BIP derivation path
+                "address_type":  str,
+                "address_index": int,
+            }
+        """
         info = {
             "testnet": self.testnet,
             "has_key": self.key is not None,
@@ -455,12 +502,35 @@ class BTC:
 
     # ========================= Balance =========================
 
-    def get_balance(self, currency: str = "btc") -> dict:
+    def sign_msg(self, msg: str) -> str:
         """
-        Get wallet balance.
+        Signs a message with the Bitcoin private key using Bitcoin message signing.
+
+        Args:
+            msg (str): Message string to sign.
 
         Returns:
-            dict with balance_ui (BTC) and balance (satoshi).
+            str: Base64-encoded Bitcoin message signature.
+
+        Raises:
+            ValueError: If no private key is set.
+        """
+        if not self.key:
+            raise ValueError("Private key not set")
+        return self.key.sign(msg)
+
+    def get_balance(self, currency: str = "btc") -> dict:
+        """
+        Returns the wallet balance by querying the network.
+
+        Args:
+            currency (str): Unused parameter (kept for API compatibility).
+
+        Returns:
+            dict: { "balance_ui": float (BTC), "balance": int (satoshi) }
+
+        Raises:
+            ValueError: If no key is set.
         """
         if not self.key:
             raise ValueError("No key set.")
@@ -476,10 +546,15 @@ class BTC:
     @staticmethod
     def get_balance_batch(address_list: list, testnet: bool = False) -> dict:
         """
-        Get BTC balances for multiple addresses in parallel.
+        Fetches BTC balances for multiple addresses concurrently using a thread pool.
+
+        Args:
+            address_list (list[str]): List of Bitcoin address strings.
+            testnet      (bool):      Query testnet instead of mainnet. Default: False.
 
         Returns:
-            dict {address: {"balance_ui": float, "balance": int}}
+            dict: { address: {"balance_ui": float (BTC), "balance": int (satoshi)} }
+                  Returns 0.0 / 0 on error for a given address.
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -503,7 +578,16 @@ class BTC:
 
     @staticmethod
     def get_balance_by_address(address: str, testnet: bool = False) -> dict:
-        """Get balance for any Bitcoin address."""
+        """
+        Returns the balance for any Bitcoin address without needing a loaded key.
+
+        Args:
+            address (str):  Bitcoin address string.
+            testnet (bool): Query testnet. Default: False.
+
+        Returns:
+            dict: { "balance_ui": float (BTC), "balance": int (satoshi) }
+        """
         if testnet:
             balance_satoshi = int(NetworkAPI.get_balance_testnet(address))
         else:
@@ -589,27 +673,61 @@ class BTC:
     # ========================= UTXO / Transactions =========================
 
     def get_unspents(self) -> list:
-        """Get unspent transaction outputs (UTXOs)."""
+        """
+        Returns the list of unspent transaction outputs (UTXOs) for the active wallet.
+
+        Returns:
+            list[Unspent]: UTXOs from the bit library, each with .amount (satoshi), .txid, .txindex.
+
+        Raises:
+            ValueError: If no key is set.
+        """
         if not self.key:
             raise ValueError("No key set.")
         return self.key.get_unspents()
 
     def get_transactions(self) -> list:
-        """Get list of transaction hashes for the wallet."""
+        """
+        Returns the list of transaction IDs (txids) for the active wallet address.
+
+        Returns:
+            list[str]: Transaction hash strings.
+
+        Raises:
+            ValueError: If no key is set.
+        """
         if not self.key:
             raise ValueError("No key set.")
         return self.key.get_transactions()
 
     @staticmethod
     def get_transactions_by_address(address: str, testnet: bool = False) -> list:
-        """Get transactions for any address."""
+        """
+        Returns transaction IDs for any Bitcoin address without a loaded key.
+
+        Args:
+            address (str):  Bitcoin address string.
+            testnet (bool): Query testnet. Default: False.
+
+        Returns:
+            list[str]: Transaction hash strings.
+        """
         if testnet:
             return NetworkAPI.get_transactions_testnet(address)
         return NetworkAPI.get_transactions(address)
 
     @staticmethod
     def get_unspents_by_address(address: str, testnet: bool = False) -> list:
-        """Get UTXOs for any address."""
+        """
+        Returns UTXOs for any Bitcoin address without a loaded key.
+
+        Args:
+            address (str):  Bitcoin address string.
+            testnet (bool): Query testnet. Default: False.
+
+        Returns:
+            list[Unspent]: UTXO objects from the bit library.
+        """
         if testnet:
             return NetworkAPI.get_unspent_testnet(address)
         return NetworkAPI.get_unspent(address)

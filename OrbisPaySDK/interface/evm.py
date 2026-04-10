@@ -3,6 +3,8 @@ import json
 import OrbisPaySDK.utils as utils
 from OrbisPaySDK.const import ERC20_SIGNATURES, __NULL_ADDRESS__, __ORBISPAY_DOMAIN_ABI, __MULTICALL3__,__MULTICALL3_ABI__
 from eth_account import Account
+from eth_account.messages import encode_defunct
+
 
 from datetime import datetime, timezone
 
@@ -12,6 +14,15 @@ from datetime import datetime, timezone
 
 class EVM():
     def __init__(self, w3:Web3 = None, key = None, address = None, decimals = 18, contract = __NULL_ADDRESS__, currency = "ETH"):
+        """
+        Args:
+            w3       (Web3):  Connected Web3 instance. Can be set later via set_params.
+            key      (str):   Hex private key (with or without 0x prefix). Optional.
+            address  (str):   Wallet address. If not set, derived from key on demand.
+            decimals (int):   Token decimals used in balance display. Default: 18.
+            contract (str):   ERC20 contract address. Default: null address (native only).
+            currency (str):   Currency symbol shown in balance dicts. Default: "ETH".
+        """
         self.w3= w3
         self.key = key
         self.address = address
@@ -20,6 +31,15 @@ class EVM():
         self.currency = currency
 
     def set_params(self, w3:Web3 = None,key:str = None, address:str = None, currency:str = None):
+        """
+        Updates instance parameters at runtime.
+
+        Args:
+            w3       (Web3): New connected Web3 instance.
+            key      (str):  New hex private key.
+            address  (str):  New wallet address.
+            currency (str):  New currency symbol.
+        """
         if w3:
             self.w3 = w3
         if key:
@@ -29,12 +49,60 @@ class EVM():
         if currency:
             self.currency = currency
     def gen_wallet(self):
+        """
+        Generates a new random EVM wallet.
+
+        Returns:
+            dict: { "address": str, "private_key": str (hex with 0x) }
+        """
         account = Web3().eth.account.create()
         return {
             "address": account.address,
             "private_key": account.key.hex()
         }
-    def parse_transaction(self,tx_hash: str, rpc_url: str = None) -> dict:
+    def parse_transaction(self, tx_hash: str, rpc_url: str = None) -> dict:
+        """
+        Fetches and parses a transaction by hash into a structured dict.
+        Automatically fetches receipt and block for full context.
+
+        Args:
+            tx_hash (str): Transaction hash (hex string with 0x).
+            rpc_url (str): RPC endpoint to use if self.w3 is not set.
+
+        Returns:
+            dict: {
+                "tx_hash":                    str,
+                "status":                     "success" | "failed" | "pending" | "error" | "not_found",
+                "error":                      str | None,
+                "from_address":               str,
+                "to_address":                 str,
+                "value_wei":                  int,
+                "value_eth":                  str,
+                "gas_limit":                  int,
+                "gas_price_wei":              int,
+                "gas_price_gwei":             str,
+                "max_fee_per_gas":            int | None,   # EIP-1559
+                "max_priority_fee_per_gas":   int | None,   # EIP-1559
+                "nonce":                      int,
+                "block_number":               int | None,
+                "block_hash":                 str | None,
+                "transaction_index":          int | None,
+                "input_data":                 str,          # raw calldata hex
+                "chain_id":                   int | None,
+                "tx_type":                    int,          # 0=legacy, 2=EIP-1559
+                "tx_category":                "native_transfer" | "contract_call" | "contract_creation",
+                "method_id":                  str | None,   # first 4 bytes of calldata
+                "gas_used":                   int,          # from receipt
+                "effective_gas_price":        int,
+                "fee_wei":                    int,
+                "fee_eth":                    str,
+                "logs":                       list[dict],
+                "logs_count":                 int,
+                "contract_address":           str | None,   # set on contract creation
+                "timestamp":                  int | None,
+                "confirmed_at":               str | None,
+            }
+        """
         if not self.w3:
             self.set_params(w3=Web3(Web3.HTTPProvider(rpc_url)))
         
@@ -138,9 +206,30 @@ class EVM():
     
     
     def get_address(self) -> str:
+        """
+        Derives the wallet address from the stored private key.
+
+        Returns:
+            str: Checksummed EVM address.
+        """
         acc = self.w3.eth.account.from_key(self.key)
         return acc.address
-    def get_balance(self, address: str = None) -> float:
+    def get_balance(self, address: str = None) -> dict:
+        """
+        Returns the native coin balance for an address.
+
+        Args:
+            address (str): EVM address to query. Defaults to self.address.
+
+        Returns:
+            dict: {
+                "contract":   str,    # ERC20 contract address or null address
+                "balance_ui": Decimal,  # human-readable amount
+                "balance":    int,      # raw wei amount
+                "decimals":   int,
+                "symbol":     str,
+            }
+        """
         if address is None:
             address = self.address
         checksum_address = Web3.to_checksum_address(address)
@@ -156,6 +245,17 @@ class EVM():
 
 
     def get_balance_batch(self, address_list: list) -> dict:
+        """
+        Fetches native coin balances for multiple addresses in one Multicall3 call.
+        Uses the aggregate3 function — batches up to 500 addresses per call.
+
+        Args:
+            address_list (list[str]): List of EVM addresses.
+
+        Returns:
+            dict: { address: float (balance in ETH/native coin) }
+                  Returns 0.0 for failed individual calls.
+        """
         GET_ETH_BALANCE = "0x4d2301cc"
         mc = self.w3.eth.contract(address=__MULTICALL3__, abi=__MULTICALL3_ABI__)
         
@@ -178,7 +278,20 @@ class EVM():
 
 
 
-    def ensure_checksum(self,w3: Web3, addr: str) -> str:
+    def ensure_checksum(self, w3: Web3, addr: str) -> str:
+        """
+        Converts an address to EIP-55 checksum format.
+
+        Args:
+            w3   (Web3): Web3 instance (unused, kept for signature compatibility).
+            addr (str):  Raw EVM address string.
+
+        Returns:
+            str: Checksummed address.
+
+        Raises:
+            ValueError: If the address is invalid.
+        """
         if addr is None:
             return None
         try:
@@ -186,6 +299,16 @@ class EVM():
         except Exception as e:
             raise ValueError(f"Invalid address '{addr}': {e}")
     def _native_transfer(self, to: str, amount: float):
+        """
+        Sends native coin (ETH/BNB/MATIC etc.) to an address and waits for confirmation.
+
+        Args:
+            to     (str):   Recipient address.
+            amount (float): Amount in native coin units (e.g. ETH).
+
+        Returns:
+            tuple: (tx_hash_hex,) on success, False on failure.
+        """
         checksum_to = Web3.to_checksum_address(to)
         
         nonce = self.w3.eth.get_transaction_count(self.address)
@@ -202,7 +325,20 @@ class EVM():
         }
         
         return self.sign_and_sand(tx)
-    def sign_and_sand(self, tx:dict, key:str = None):
+    def sign_and_sand(self, tx: dict, key: str = None):
+        """
+        Signs a transaction dict, broadcasts it, and waits for confirmation.
+
+        Args:
+            tx  (dict): Unsigned transaction dict (from, to, value, gas, gasPrice, nonce, chainId).
+            key (str):  Hex private key to sign with. Falls back to self.key if not provided.
+
+        Returns:
+            tuple | False: (tx_hash_hex,) on success, False if receipt status != 1.
+
+        Raises:
+            ValueError: If self.w3 is not initialised.
+        """
         if not self.w3:
             raise ValueError("Web3 instance is not initialized in EVM class")
         
@@ -223,7 +359,29 @@ class EVM():
         
 
         return self.w3.to_hex(tx_hash),
-    def tx_to_human_view(self, tx_raw):
+    def tx_to_human_view(self, tx_raw: dict) -> dict:
+        """
+        Converts a raw transaction dict into a human-readable summary.
+        Decodes ERC20 transfer / approve calldata and Uniswap swap method IDs.
+
+        Args:
+            tx_raw (dict): Raw transaction dict as returned by web3.eth.get_transaction().
+
+        Returns:
+            dict: {
+                "symbol":               str,           # "Native" or token symbol
+                "amount":               Decimal | str, # amount in native/token units
+                "action":               str,           # e.g. "Transfer", "Approve", "Contract Call"
+                "from":                 str,
+                "to":                   str,
+                "contract_interaction": bool,
+                "method_id":            str | None,    # first 4 bytes of calldata
+                "to_contract":          str | None,    # contract address if interacted
+                "description":          str | None,    # human description from ERC20_SIGNATURES
+                "amount_raw":           int | None,    # raw token amount if decoded
+                "error":                str | None,    # set if decoding failed
+            }
+        """
         # Начальные значения
         data_hex = tx_raw.get('data', '0x')
         value_native = tx_raw.get('value', 0)
@@ -284,7 +442,19 @@ class EVM():
             meta["error"] = f"Decoding failed: {str(e)}"
 
         return meta
-    def sign(self,tx:dict = None,key:str = None,w3:Web3 = None,send:bool = False):
+    def sign(self, tx: dict = None, key: str = None, w3: Web3 = None, send: bool = False):
+        """
+        Signs a transaction without broadcasting it.
+
+        Args:
+            tx   (dict): Unsigned transaction dict.
+            key  (str):  Hex private key. Falls back to self.key.
+            w3   (Web3): Web3 instance. Falls back to self.w3.
+            send (bool): Unused flag (kept for API compatibility).
+
+        Returns:
+            SignedTransaction: Signed transaction object with .raw_transaction attribute.
+        """
         if w3 is None:
             w3 = self.w3
         if key is None:
@@ -297,14 +467,47 @@ class EVM():
 
         return txid
             
-    def send(self, tx):
+    def send(self, tx) -> str | bool:
+        """
+        Broadcasts a pre-signed transaction and waits for confirmation.
+
+        Args:
+            tx (SignedTransaction): Signed transaction object (from sign()).
+
+        Returns:
+            str | False: Transaction hash hex string on success, False if status != 1.
+        """
         tx_hash = self.w3.eth.send_raw_transaction(tx.raw_transaction)
         tx_receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
     
         if tx_receipt.status != 1:
             return False
         return f"{self.w3.to_hex(tx_hash)}"
-    
+
+
+
+    def sign_msg(self, msg: str, key: str = None, w3: Web3 = None) -> str:
+        """
+        Signs a plain text message using EIP-191 (eth_sign prefix).
+
+        Args:
+            msg (str):  Message to sign.
+            key (str):  Hex private key. Falls back to self.key.
+            w3  (Web3): Web3 instance. Falls back to self.w3.
+
+        Returns:
+            str: 65-byte ECDSA signature as a hex string (with 0x).
+        """
+        if w3 is None:
+            w3 = self.w3
+        if key is None:
+            key = self.key
+
+        message = w3.eth.account.sign_message(
+            encode_defunct(text=msg),
+            private_key=key
+        )
+        return message.signature.hex()  
 
 
 class DomainService:
@@ -322,6 +525,15 @@ class DomainService:
     """
 
     def __init__(self, rpc_url: str, contract_address: str, private_key: str = None):
+        """
+        Args:
+            rpc_url:          HTTP RPC endpoint for the chain where DomainService is deployed.
+            contract_address: Deployed DomainService contract address.
+            private_key:      Hex private key for write operations. Optional for read-only use.
+
+        Raises:
+            ConnectionError: If unable to connect to the RPC endpoint.
+        """
         self.w3 = Web3(Web3.HTTPProvider(rpc_url))
         if not self.w3.is_connected():
             raise ConnectionError(f"Failed to connect to RPC: {rpc_url}")
@@ -340,7 +552,19 @@ class DomainService:
     # ─── Internal helpers ─────────────────────────────────────────────────────
 
     def _send_tx(self, fn, value_wei: int = 0) -> str:
-        """Build, sign and send a transaction. Returns tx hash."""
+        """
+        Builds, signs, and broadcasts a contract write transaction.
+
+        Args:
+            fn        (ContractFunction): Prepared contract function call (e.g. contract.functions.register(...)).
+            value_wei (int):              Native coin value attached to the transaction (default 0).
+
+        Returns:
+            str: Transaction hash hex string.
+
+        Raises:
+            ValueError: If no private key is set.
+        """
         if not self.account:
             raise ValueError("Private key is required for write operations")
 
@@ -357,13 +581,30 @@ class DomainService:
         return self.w3.to_hex(tx_hash)
 
     def _wait(self, tx_hash: str) -> dict:
-        """Wait for transaction receipt."""
+        """
+        Blocks until a transaction is included in a block.
+
+        Args:
+            tx_hash (str): Transaction hash to wait for.
+
+        Returns:
+            dict: Transaction receipt from web3.
+        """
         return self.w3.eth.wait_for_transaction_receipt(tx_hash)
 
     # ─── Read functions ───────────────────────────────────────────────────────
 
     def get_domain(self, label: str) -> dict:
-        """Get full info about a .orbis domain."""
+        """
+        Returns the full on-chain record for a .orbis domain.
+
+        Args:
+            label (str): Domain label without the .orbis suffix (e.g. "mysite").
+
+        Returns:
+            dict: { label, full_name, owner, record, registered_at, expires_at,
+                    transfer_locked, active }
+        """
         owner, record, registered_at, expires_at, transfer_locked, active = \
             self.contract.functions.getDomain(label).call()
         return {
@@ -378,11 +619,28 @@ class DomainService:
         }
 
     def is_available(self, label: str) -> bool:
-        """Check if a domain label is available for registration."""
+        """
+        Checks if a .orbis domain label is available for registration.
+
+        Args:
+            label (str): Domain label without .orbis suffix.
+
+        Returns:
+            bool: True if available, False if already registered.
+        """
         return self.contract.functions.isAvailable(label).call()
 
     def calculate_fee(self, label: str, years: int) -> dict:
-        """Calculate registration/renewal fee. Returns wei and ETH amounts."""
+        """
+        Calculates the registration or renewal fee for a domain.
+
+        Args:
+            label (str): Domain label (length determines the price tier).
+            years (int): Number of years to register/renew.
+
+        Returns:
+            dict: { "wei": int, "eth": float }
+        """
         wei = self.contract.functions.calculateFee(label, years).call()
         return {
             "wei": wei,
@@ -390,17 +648,42 @@ class DomainService:
         }
 
     def get_owner_domains(self, address: str) -> list[str]:
-        """Return all .orbis domains owned by an address."""
+        """
+        Returns all .orbis domain labels owned by an address.
+
+        Args:
+            address (str): EVM address to query.
+
+        Returns:
+            list[str]: List of domain labels (without .orbis suffix).
+        """
         return self.contract.functions.getOwnerDomains(
             Web3.to_checksum_address(address)
         ).call()
 
     def get_full_name(self, label: str) -> str:
-        """Return full domain name with .orbis suffix."""
+        """
+        Returns the full domain name with .orbis suffix as stored on-chain.
+
+        Args:
+            label (str): Domain label without suffix.
+
+        Returns:
+            str: e.g. "mysite.orbis"
+        """
         return self.contract.functions.getFullName(label).call()
 
     def get_prices(self) -> dict:
-        """Return current pricing tiers in wei and ETH."""
+        """
+        Returns the current domain pricing tiers from the contract.
+
+        Returns:
+            dict: {
+                "3_chars": { "wei": int, "eth": float },
+                "4_chars": { "wei": int, "eth": float },
+                "5_plus":  { "wei": int, "eth": float },
+            }
+        """
         p3 = self.contract.functions.price3chars().call()
         p4 = self.contract.functions.price4chars().call()
         p5 = self.contract.functions.price5plus().call()
@@ -411,15 +694,28 @@ class DomainService:
         }
 
     def get_contract_owner(self) -> str:
-        """Return the contract owner address."""
+        """
+        Returns the address of the contract owner (admin).
+
+        Returns:
+            str: Checksummed owner address.
+        """
         return self.contract.functions.contractOwner().call()
 
     # ─── Write functions ──────────────────────────────────────────────────────
 
     def register(self, label: str, record: str, years: int, wait: bool = True) -> str:
         """
-        Register a new .orbis domain.
-        Fee is calculated automatically and sent with the transaction.
+        Registers a new .orbis domain. Fee is calculated automatically.
+
+        Args:
+            label  (str):  Domain label to register.
+            record (str):  IPFS/IP record to associate (e.g. "ipfs://Qm...").
+            years  (int):  Registration duration in years.
+            wait   (bool): If True, blocks until confirmed. Default: True.
+
+        Returns:
+            str: Transaction hash hex string.
         """
         fee = self.contract.functions.calculateFee(label, years).call()
         tx_hash = self._send_tx(
@@ -433,7 +729,17 @@ class DomainService:
         return tx_hash
 
     def renew(self, label: str, years: int, wait: bool = True) -> str:
-        """Renew an existing .orbis domain."""
+        """
+        Renews an existing .orbis domain. Fee is calculated automatically.
+
+        Args:
+            label (str):  Domain label to renew.
+            years (int):  Number of years to extend.
+            wait  (bool): If True, blocks until confirmed. Default: True.
+
+        Returns:
+            str: Transaction hash hex string.
+        """
         fee = self.contract.functions.calculateFee(label, years).call()
         tx_hash = self._send_tx(
             self.contract.functions.renew(label, years),
@@ -446,7 +752,17 @@ class DomainService:
         return tx_hash
 
     def update_record(self, label: str, new_record: str, wait: bool = True) -> str:
-        """Update the IPFS/IP record linked to a domain."""
+        """
+        Updates the IPFS/IP record associated with an owned domain.
+
+        Args:
+            label      (str):  Domain label to update.
+            new_record (str):  New record value (e.g. "ipfs://Qm..." or an IP address).
+            wait       (bool): If True, blocks until confirmed. Default: True.
+
+        Returns:
+            str: Transaction hash hex string.
+        """
         tx_hash = self._send_tx(
             self.contract.functions.updateRecord(label, new_record)
         )
@@ -457,7 +773,18 @@ class DomainService:
         return tx_hash
 
     def transfer(self, label: str, to_address: str, wait: bool = True) -> str:
-        """Transfer domain ownership to another address."""
+        """
+        Transfers ownership of a .orbis domain to another address.
+        Domain must not have transfer_locked = True.
+
+        Args:
+            label      (str):  Domain label to transfer.
+            to_address (str):  Recipient EVM address.
+            wait       (bool): If True, blocks until confirmed. Default: True.
+
+        Returns:
+            str: Transaction hash hex string.
+        """
         tx_hash = self._send_tx(
             self.contract.functions.transfer(label, Web3.to_checksum_address(to_address))
         )
@@ -468,7 +795,17 @@ class DomainService:
         return tx_hash
 
     def set_transfer_lock(self, label: str, locked: bool, wait: bool = True) -> str:
-        """Lock or unlock domain transfers."""
+        """
+        Enables or disables the transfer lock on an owned domain.
+
+        Args:
+            label  (str):  Domain label.
+            locked (bool): True to lock transfers, False to unlock.
+            wait   (bool): If True, blocks until confirmed. Default: True.
+
+        Returns:
+            str: Transaction hash hex string.
+        """
         tx_hash = self._send_tx(
             self.contract.functions.setTransferLock(label, locked)
         )
@@ -479,7 +816,17 @@ class DomainService:
         return tx_hash
 
     def release(self, label: str, wait: bool = True) -> str:
-        """Release an expired domain back to the public."""
+        """
+        Releases an expired domain back to the public pool.
+        Can only be called on domains past their expiry date.
+
+        Args:
+            label (str):  Expired domain label to release.
+            wait  (bool): If True, blocks until confirmed. Default: True.
+
+        Returns:
+            str: Transaction hash hex string.
+        """
         tx_hash = self._send_tx(
             self.contract.functions.release(label)
         )
@@ -498,7 +845,18 @@ class DomainService:
         price_5plus_eth: float,
         wait: bool = True
     ) -> str:
-        """Update pricing tiers (contract owner only). Pass values in ETH."""
+        """
+        Updates the domain pricing tiers. Contract owner only.
+
+        Args:
+            price_3chars_eth (float): Price for 3-character domains in ETH.
+            price_4chars_eth (float): Price for 4-character domains in ETH.
+            price_5plus_eth  (float): Price for 5+ character domains in ETH.
+            wait             (bool):  If True, blocks until confirmed. Default: True.
+
+        Returns:
+            str: Transaction hash hex string.
+        """
         tx_hash = self._send_tx(
             self.contract.functions.setPrices(
                 Web3.to_wei(price_3chars_eth, "ether"),
@@ -513,7 +871,17 @@ class DomainService:
         return tx_hash
 
     def withdraw(self, to_address: str, amount_eth: float, wait: bool = True) -> str:
-        """Withdraw ETH from the contract (contract owner only)."""
+        """
+        Withdraws ETH collected from registrations. Contract owner only.
+
+        Args:
+            to_address (str):   Recipient address for the withdrawn ETH.
+            amount_eth (float): Amount in ETH to withdraw.
+            wait       (bool):  If True, blocks until confirmed. Default: True.
+
+        Returns:
+            str: Transaction hash hex string.
+        """
         tx_hash = self._send_tx(
             self.contract.functions.withdraw(
                 Web3.to_checksum_address(to_address),
