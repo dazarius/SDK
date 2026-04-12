@@ -243,16 +243,30 @@ class SOL:
             "string_ui_balance": f"{sol_balance:.9f}",
             "raw_balance": lamports,
         }  
-    async def get_balance_batch(self, address_list: list) -> dict:
+    async def get_balance_batch(
+        self,
+        address_list: list,
+        include_tokens: bool = True,
+    ) -> dict:
         """
         Fetches SOL balances for multiple addresses concurrently.
+        Optionally also fetches all SPL token balances via get_token_accounts_by_owner.
 
         Args:
-            address_list (list[str]): List of Base58 public key strings.
+            address_list   (list[str]): List of Base58 public key strings.
+            include_tokens (bool):      If True, each entry also contains a "tokens" key
+                                        with the output of get_token_accounts_by_owner.
 
         Returns:
-            dict: { address: {"balance": float, "raw_balance": int} }
-                  On error for a given address returns {"balance": 0.0, "raw_balance": 0}.
+            dict: {
+                address: {
+                    "balance":     float,       # SOL amount
+                    "raw_balance": int,          # lamports
+                    "tokens":      dict | None,  # present only if include_tokens=True
+                                                 # { mint: {ui_balance, raw_balance, ...} }
+                }
+            }
+            On error for a given address the SOL fields are 0 and tokens is {}.
         """
         from solders.pubkey import Pubkey
 
@@ -261,9 +275,21 @@ class SOL:
                 pubkey = Pubkey.from_string(addr)
                 resp = await self.client.get_balance(pubkey)
                 lamports = resp.value
-                return addr, {"balance": lamports / LAMPORTS_PER_SOL, "raw_balance": lamports}
+                entry = {
+                    "balance":     lamports / LAMPORTS_PER_SOL,
+                    "raw_balance": lamports,
+                }
+                if include_tokens:
+                    try:
+                        entry["tokens"] = await self.get_token_accounts_by_owner(addr)
+                    except Exception:
+                        entry["tokens"] = {}
+                return addr, entry
             except Exception:
-                return addr, {"balance": 0.0, "raw_balance": 0}
+                entry = {"balance": 0.0, "raw_balance": 0}
+                if include_tokens:
+                    entry["tokens"] = {}
+                return addr, entry
 
         results = await asyncio.gather(*[fetch(addr) for addr in address_list])
         return dict(results)
@@ -285,7 +311,6 @@ class SOL:
             }}
         """
         if not owner_pubkey:
-            print("No owner pubkey provided, using the wallet's pubkey.")
             owner_pubkey = self.get_pubkey(returnString=True)
         
         headers = {
@@ -516,7 +541,7 @@ class SOL:
     def build_sol_transfer_ix(
         self,
         to: str,
-        lamports: int,
+        lamports: int = None,
         from_pubkey=None,
     ) -> list:
         """
@@ -524,17 +549,48 @@ class SOL:
         Does NOT broadcast anything — returns a list so you can extend your
         instruction list and batch multiple transfers into one transaction.
 
+        Accepts two calling styles:
+
+        **Explicit args:**
+            build_sol_transfer_ix(to="<addr>", lamports=100000)
+            build_sol_transfer_ix(to="<addr>", lamports=100000, from_pubkey=kp.pubkey())
+
+        **Packed string** (comma or dot separated, lamports must be omitted):
+            ``"<to>,<lamports>"``          — sender defaults to self.KEYPAIR
+            ``"<from>,<to>,<lamports>"``   — explicit sender address
+            ``"<to>.<lamports>"``          — dot separator also accepted
+
+        Examples:
+            build_sol_transfer_ix("BjxJ...,100000")
+            build_sol_transfer_ix("A8tr...,2U4M...,100000")
+
         Args:
-            to          (str):    Base58 recipient address.
-            lamports    (int):    Amount in lamports (1 SOL = 1_000_000_000).
+            to          (str):    Base58 recipient address, or a packed string.
+            lamports    (int):    Amount in lamports. Omit when using a packed string.
             from_pubkey (Pubkey): Sender pubkey. Defaults to self.KEYPAIR pubkey.
 
         Returns:
             list[Instruction]: One-element list containing the transfer instruction.
 
         Raises:
-            ValueError: If no sender pubkey is available.
+            ValueError: If no sender pubkey is available or the packed string is malformed.
         """
+        if lamports is None:
+            parts = re.split(r"[,.]", to.strip())
+            parts = [p.strip() for p in parts if p.strip()]
+            if len(parts) == 3:
+                from_pubkey = parts[0]
+                to = parts[1]
+                lamports = int(parts[2])
+            elif len(parts) == 2:
+                to = parts[0]
+                lamports = int(parts[1])
+            else:
+                raise ValueError(
+                    "build_sol_transfer_ix: packed string must be "
+                    "'to,lamports' or 'from,to,lamports'"
+                )
+
         sender = from_pubkey or self.get_pubkey()
         if isinstance(sender, str):
             sender = solders.pubkey.Pubkey.from_string(sender)
@@ -1425,3 +1481,64 @@ class SOL:
 
 
 
+# if __name__ == "__main__":
+#     s = SOL()
+#     instruction = [Instruction(
+#     Instruction {
+#         program_id: 11111111111111111111111111111111,
+#         accounts: [
+#             AccountMeta {
+#                 pubkey: C3MhUqKFRkkTRBRZcH7EKoD8c1iose9T3tPb7qiytzxs,
+#                 is_signer: true,
+#                 is_writable: true,
+#             },
+#             AccountMeta {
+#                 pubkey: C3MhUqKFRkkTRBRZcH7EKoD8c1iose9T3tPb7qiytzxs,
+#                 is_signer: false,
+#                 is_writable: true,
+#             },
+#         ],
+#         data: [
+#             2,
+#             0,
+#             0,
+#             0,
+#             0,
+#             225,
+#             245,
+#             5,
+#             0,
+#             0,
+#             0,
+#             0,
+#         ],
+#     },
+# )]
+
+#     run = s.sign_and_send()
+async def test():
+    s = SOL(
+        rpc_url="https://api.devnet.solana.com",
+        KEYPAIR="t14ypHnjBg6cJsJt1cCYiSBsnijVwrUToGFz5bGSDp6mWrME4FGNgdWV8qTZi5NbvsMPJRZUwzAPJsiBTeHmJq1"
+    )
+    s.add_signer("58UYMN6bth7C6NkZp97jPVStv4XEDovnk6BF2bYQynSL5LoFRDQENByhNBs3yMNCUPv1QHxEb68UMpuUMRFYLsUB")
+
+    address_list = ["2U4MLeazpNbvTjrBz9rRgpbFcGn3HN37GuoijKnqc9G2", "BjxJeFZJ1HApM894w4zAdLJKhFUdAQSPKwSZFLEpdJuR", "EMkhZaTAYuDvaXeKpdMAX9qM3b4Y3AZn9QcLqULmohUM"]
+    _instructions = []
+    for address in address_list:
+        inxt_transfer_sol = s.build_sol_transfer_ix(
+            to=address,
+            lamports=int(0.1 * LAMPORTS_PER_SOL),
+            from_pubkey="25jrwTsXY94FtJvsnDpfH8vTnDHHvNzwRGJqX6wKnEJ3"
+        )
+        _instructions.append(inxt_transfer_sol)
+        inxt_transfer_token = await s.build_token_transfer_ix(
+            to=address,
+            amount=int(10 * (10 ** 6)),  # 10 USDC with 6 decimals
+            mint="Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr",  # USDC mint
+        )
+        _instructions.append(inxt_transfer_token)
+    tx = await s.send_instructions(_instructions)
+    print(tx)
+if __name__ == "__main__":
+    asyncio.run(test())
