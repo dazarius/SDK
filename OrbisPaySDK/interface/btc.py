@@ -46,6 +46,7 @@ class BTC:
         address_index: int = 0,
         address_type: str = "bip84",
         testnet: bool = False,
+        build_tx: bool = False,
     ):
         """
         Args:
@@ -55,8 +56,10 @@ class BTC:
             address_index: Address index for HD derivation (default 0).
             address_type: Derivation standard — 'bip44' (legacy), 'bip49' (wrapped segwit), 'bip84' (native segwit).
             testnet: Use testnet instead of mainnet.
+            build_tx: If True, transfer methods return raw signed tx hex instead of broadcasting.
         """
         self.testnet = testnet
+        self.build_tx = build_tx
         self.key = None
         self.mnemonics = None
         self.passphrase = passphrase
@@ -380,6 +383,7 @@ class BTC:
         address_index: Optional[int] = None,
         address_type: Optional[str] = None,
         testnet: Optional[bool] = None,
+        build_tx: Optional[bool] = None,
     ):
         """
         Updates instance parameters at runtime. Triggers wallet reload if mnemonics or key provided.
@@ -391,6 +395,7 @@ class BTC:
             address_index (int):             HD derivation address index.
             address_type  (str):             'bip44', 'bip49', or 'bip84'.
             testnet       (bool):            Switch between mainnet/testnet.
+            build_tx      (bool):            New value for the build_tx flag.
         """
         if testnet is not None:
             self.testnet = testnet
@@ -400,6 +405,8 @@ class BTC:
             self.address_type = address_type
         if address_index is not None:
             self.address_index = address_index
+        if build_tx is not None:
+            self.build_tx = build_tx
 
         if mnemonics:
             self.from_mnemonic(
@@ -633,6 +640,9 @@ class BTC:
         if fee is not None:
             kwargs["fee"] = fee
 
+        if self.build_tx:
+            return self.key.create_transaction(outputs, **kwargs)
+
         tx_hash = self.key.send(outputs, **kwargs)
         return tx_hash
 
@@ -666,6 +676,9 @@ class BTC:
         kwargs = {}
         if fee is not None:
             kwargs["fee"] = fee
+
+        if self.build_tx:
+            return self.key.create_transaction(outputs, **kwargs)
 
         tx_hash = self.key.send(outputs, **kwargs)
         return tx_hash

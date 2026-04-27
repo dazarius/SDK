@@ -87,6 +87,7 @@ class TRX:
         private_key: Optional[str] = None,
         provider_url: Optional[str] = None,
         api_key: Optional[str] = None,
+        build_tx: bool = False,
     ):
         """
         Args:
@@ -95,11 +96,14 @@ class TRX:
             private_key  (str): Hex private key (64-char). Optional — can be set later.
             provider_url (str): Custom TronGrid/TronStack HTTP endpoint. Overrides network param.
             api_key      (str): TronGrid API key for higher rate limits. Optional.
+            build_tx     (bool): If True, transfer_* methods return the signed transaction
+                                 instead of broadcasting to the network.
         """
         self.network = network
         self.private_key = None
         self.address = None
         self.api_key = api_key
+        self.build_tx = build_tx
 
         if provider_url:
             provider = HTTPProvider(provider_url, api_key=api_key) if api_key else HTTPProvider(provider_url)
@@ -135,15 +139,17 @@ class TRX:
         private_key: Optional[str] = None,
         provider_url: Optional[str] = None,
         api_key: Optional[str] = None,
+        build_tx: Optional[bool] = None,
     ):
         """
         Updates instance parameters at runtime without recreating the object.
 
         Args:
-            network      (str): New network name ("mainnet", "shasta", "nile").
-            private_key  (str): New hex private key.
-            provider_url (str): New custom HTTP provider URL (takes priority over network).
-            api_key      (str): New TronGrid API key.
+            network      (str):  New network name ("mainnet", "shasta", "nile").
+            private_key  (str):  New hex private key.
+            provider_url (str):  New custom HTTP provider URL (takes priority over network).
+            api_key      (str):  New TronGrid API key.
+            build_tx     (bool): New value for the build_tx flag.
         """
         if api_key:
             self.api_key = api_key
@@ -154,6 +160,8 @@ class TRX:
             self.client = Tron(provider=provider)
         elif network:
             self.client = Tron(network=network)
+        if build_tx is not None:
+            self.build_tx = build_tx
         if private_key:
             self.set_private_key(private_key)
 
@@ -274,6 +282,10 @@ class TRX:
             .build()
             .sign(key)
         )
+
+        if self.build_tx:
+            return txn
+
         result = txn.broadcast()
 
         return {
@@ -324,6 +336,10 @@ class TRX:
             .build()
             .sign(key)
         )
+
+        if self.build_tx:
+            return txn
+
         result = txn.broadcast()
 
         return {

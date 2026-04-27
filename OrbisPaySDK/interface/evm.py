@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 
 class EVM():
-    def __init__(self, w3:Web3 = None, key = None, address = None, decimals = 18, contract = __NULL_ADDRESS__, currency = "ETH"):
+    def __init__(self, w3:Web3 = None, key = None, address = None, decimals = 18, contract = __NULL_ADDRESS__, currency = "ETH", build_tx: bool = False):
         """
         Args:
             w3       (Web3):  Connected Web3 instance. Can be set later via set_params.
@@ -22,6 +22,7 @@ class EVM():
             decimals (int):   Token decimals used in balance display. Default: 18.
             contract (str):   ERC20 contract address. Default: null address (native only).
             currency (str):   Currency symbol shown in balance dicts. Default: "ETH".
+            build_tx (bool):  If True, sign_and_sand returns raw signed tx hex instead of broadcasting.
         """
         self.w3= w3
         self.key = key
@@ -29,8 +30,9 @@ class EVM():
         self.decimals = decimals
         self.contract = contract
         self.currency = currency
+        self.build_tx = build_tx
 
-    def set_params(self, w3:Web3 = None,key:str = None, address:str = None, currency:str = None):
+    def set_params(self, w3:Web3 = None, key:str = None, address:str = None, currency:str = None, build_tx: bool = None):
         """
         Updates instance parameters at runtime.
 
@@ -39,6 +41,7 @@ class EVM():
             key      (str):  New hex private key.
             address  (str):  New wallet address.
             currency (str):  New currency symbol.
+            build_tx (bool): New value for the build_tx flag.
         """
         if w3:
             self.w3 = w3
@@ -48,6 +51,8 @@ class EVM():
             self.address = address
         if currency:
             self.currency = currency
+        if build_tx is not None:
+            self.build_tx = build_tx
     def gen_wallet(self):
         """
         Generates a new random EVM wallet.
@@ -344,19 +349,22 @@ class EVM():
         
         # Если ключ не передан в метод, берем тот, что в self.key
         target_key = key if key else self.key
-        
+
         # 1. Подписываем. Используем target_key!
         signed = self.w3.eth.account.sign_transaction(tx, target_key)
-        
+
+        if self.build_tx:
+            return self.w3.to_hex(signed.raw_transaction)
+
         # 2. Отправляем
         tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
-        
+
         # 3. Ждем подтверждения
         tx_receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
-        
+
         if tx_receipt.status != 1:
             return False
-        
+
 
         return self.w3.to_hex(tx_hash),
     def tx_to_human_view(self, tx_raw: dict) -> dict:

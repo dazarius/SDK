@@ -36,7 +36,7 @@ import httpx
 import base64
 import re
 import base58
-
+from jupiter_python_sdk.jupiter import Jupiter
 
 LAMPORTS_PER_SOL = 1_000_000_000  # 1 SOL = 1,000,000,000 lamports
 coigeco_id = "sol"

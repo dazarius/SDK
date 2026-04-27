@@ -45,6 +45,7 @@ class TON:
         api_key: Optional[str] = None,
         mnemonics: Optional[List[str]] = None,
         wallet_version: str = DEFAULT_VERSION,
+        build_tx: bool = False,
     ):
         """
         Args:
@@ -53,9 +54,12 @@ class TON:
             mnemonics      (list[str]): 24-word mnemonic phrase. If provided, wallet is loaded immediately.
             wallet_version (str):       Wallet contract version — 'v3r1', 'v3r2', 'v4r2', 'wr5'.
                                         Default: 'wr5' (WalletV5R1).
+            build_tx       (bool):      If True, transfer_* methods return the BOC instead of broadcasting.
+                                        Only supported for legacy wallet versions (v3r1, v3r2, v4r2).
         """
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
+        self.build_tx = build_tx
         self.wallet = None
         self.mnemonics = None
         self.wallet_version = wallet_version
@@ -117,6 +121,7 @@ class TON:
         api_key: Optional[str] = None,
         mnemonics: Optional[Union[str, List[str]]] = None,
         wallet_version: Optional[str] = DEFAULT_VERSION,
+        build_tx: Optional[bool] = None,
     ):
         """
         Updates instance parameters at runtime without recreating the object.
@@ -126,6 +131,7 @@ class TON:
             api_key        (str):             New API key.
             mnemonics      (str | list[str]): New mnemonic — triggers set_wallet() if provided.
             wallet_version (str):             New wallet version to use when loading from mnemonics.
+            build_tx       (bool):            New value for the build_tx flag.
         """
         if api_url:
             self.api_url = api_url.rstrip("/")
@@ -133,6 +139,8 @@ class TON:
             self.api_key = api_key
         if wallet_version:
             self.wallet_version = wallet_version
+        if build_tx is not None:
+            self.build_tx = build_tx
         if mnemonics:
             self.set_wallet(mnemonics, self.wallet_version)
 
@@ -430,6 +438,9 @@ class TON:
         boc_bytes = query["message"].to_boc(False)
         boc = bytes_to_b64str(boc_bytes)
 
+        if self.build_tx:
+            return {"boc": boc, "amount": amount, "to": to}
+
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{self.api_url}/sendBoc",
@@ -607,6 +618,9 @@ class TON:
         )
 
         boc = bytes_to_b64str(query["message"].to_boc(False))
+
+        if self.build_tx:
+            return {"boc": boc, "jetton_amount": amount, "to": to}
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(

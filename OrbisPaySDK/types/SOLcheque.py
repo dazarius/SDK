@@ -351,7 +351,7 @@ class SOLCheque:
             ],
         )
         if build_instruction:
-            return ix
+            return [ix]
         sig = await self._send_async([ix])
         return {"cheque_pda": str(cheque_pda), "cheque_id": cid.hex(), "signature": sig}
 
@@ -474,6 +474,7 @@ class SOLCheque:
                 AccountMeta(pubkey=signer_ata,               is_signer=False, is_writable=True),
                 AccountMeta(pubkey=treas_ata,                is_signer=False, is_writable=True),
                 AccountMeta(pubkey=vault_ata,                is_signer=False, is_writable=True),
+                AccountMeta(pubkey=treasury_pk,              is_signer=False, is_writable=False),
                 AccountMeta(pubkey=recipient_pk,             is_signer=False, is_writable=False),
                 AccountMeta(pubkey=payer_pk,                 is_signer=True,  is_writable=True),
                 AccountMeta(pubkey=TOKEN_PROGRAM_ID,         is_signer=False, is_writable=False),
@@ -604,6 +605,7 @@ class SOLCheque:
                 AccountMeta(pubkey=signer_ata,               is_signer=False, is_writable=True),
                 AccountMeta(pubkey=treas_ata_in,             is_signer=False, is_writable=True),
                 AccountMeta(pubkey=vault_ata,                is_signer=False, is_writable=True),
+                AccountMeta(pubkey=treasury_pk,              is_signer=False, is_writable=False),
                 AccountMeta(pubkey=payer_pk,                 is_signer=True,  is_writable=True),
                 AccountMeta(pubkey=TOKEN_PROGRAM_ID,         is_signer=False, is_writable=False),
                 AccountMeta(pubkey=ASSOCIATED_TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),

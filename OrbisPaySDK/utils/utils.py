@@ -1,16 +1,25 @@
 import solders
 import httpx
+import OrbisPaySDK.const as sdk_const
 from OrbisPaySDK.const import LAMPORTS_PER_SOL
 from OrbisPaySDK.interface import (erc20, erc721, sol)
 from OrbisPaySDK.types import EVMcheque, SOLcheque
 from web3 import Web3
 import dataclasses
+import os
+
 from dataclasses import dataclass
 from typing import Union, Optional, Dict, List
 import base58
+import base64
 
 
-
+@dataclass 
+class Cheque():
+    signature:str
+    fee_pay:any
+    date:str
+    
 @dataclass
 class TokenERC20:
     symbal:any
@@ -43,6 +52,134 @@ class Chaque:
     contract:str = None
     
 
+class _Helper():
+    def __init__(self, sep: str  = ".", comment_char:str = " ",_KDF_ITERATIONS: int = 390_000, _SALT_SIZE: int = 16, _IV_SIZE: int = 12, _KEY_SIZE: int = 32):
+        self.sep: str  = sep
+        self.comment_char:str =  comment_char
+        self._KDF_ITERATIONS = _KDF_ITERATIONS
+        self._SALT_SIZE = _SALT_SIZE
+        self._IV_SIZE = _IV_SIZE
+        self._KEY_SIZE = _KEY_SIZE
+    def parse_line(self, line: str, sep: str = None, label: str = "transfer", default="requier") -> list[str]:
+        """
+        Parse a line into [from, to, amount].
+
+        Formats:
+            to.amount          → from = default (or "from_reqier" if default is None)
+            from.to.amount     → all three from the line
+
+        Returns:
+            [from, to, amount] or [] if unparseable.
+
+        Examples:
+            parse_line('ABC.100000')              → ['from_reqier', 'ABC', '100000']
+            parse_line('ABC.100000', default='X') → ['X', 'ABC', '100000']
+            parse_line('KEY.ABC.100000')           → ['KEY', 'ABC', '100000']
+            parse_line('KEY,ABC,100000', sep=',')  → ['KEY', 'ABC', '100000']
+        """
+        if sep is None:
+            sep = self.sep
+        import re
+        line = line.strip()
+        if not line:
+            return []
+
+        line = re.sub(r'\s+[-#;].*$', '', line).strip()
+        line = re.sub(r'\s*//.*$',    '', line).strip()
+        if not line:
+            return []
+
+        parts = [p.strip() for p in line.split(sep)]
+
+        if parts and parts[-1]:
+            parts[-1] = parts[-1].split()[0]
+
+        
+
+        parts = [p for p in parts if p]
+
+        if len(parts) == 2:
+            parts.insert(0, default)
+
+        try:
+            parts[-1] = int(parts[-1])
+        except (ValueError, IndexError):
+            pass
+
+        return parts
+
+
+    def _derive_key(self,password: str, salt: bytes) -> bytes:
+        """Derive a 256-bit key from a password using PBKDF2-HMAC-SHA256."""
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.hazmat.primitives import hashes
+
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=self._KEY_SIZE,
+            salt=salt,
+            iterations=self._KDF_ITERATIONS,
+        )
+        return kdf.derive(password.encode("utf-8"))
+
+
+    def encrypt_private_key(self,private_key: str, password: str) -> str:
+        """
+        Encrypt a private key with a password (AES-256-GCM).
+
+        :param private_key: Private key (hex string, base58, etc.)
+        :param password:    User password
+        :return:            Base64 string (salt + iv + tag + ciphertext)
+        """
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        salt = os.urandom(self._SALT_SIZE)
+        iv   = os.urandom(self._IV_SIZE)
+        key  = self._derive_key(password, salt)
+
+        aesgcm     = AESGCM(key)
+        ciphertext = aesgcm.encrypt(iv, private_key.encode("utf-8"), None)
+        # ciphertext already contains the tag (last 16 bytes)
+
+        blob = salt + iv + ciphertext
+        return base64.b64encode(blob).decode("ascii")
+
+
+    def decrypt_private_key(self, encrypted_b64: str, password: str) -> str:
+        """
+        Decrypt a private key from a base64 string.
+
+        :param encrypted_b64: String returned by encrypt_private_key()
+        :param password:      User password
+        :return:              Original private key
+        :raises ValueError:   Wrong password or corrupted data
+        """
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        from cryptography.exceptions import InvalidTag
+
+        try:
+            blob = base64.b64decode(encrypted_b64)
+        except Exception:
+            raise ValueError("Invalid encrypted data format")
+
+        if len(blob) < self._SALT_SIZE + self._IV_SIZE + 16:
+            raise ValueError("Data is too short - corrupted or not encrypted")
+
+        salt       = blob[:self._SALT_SIZE]
+        iv         = blob[self._SALT_SIZE : self._SALT_SIZE + self._IV_SIZE]
+        ciphertext = blob[self._SALT_SIZE + self._IV_SIZE :]
+
+        key    = self._derive_key(password, salt)
+        aesgcm = AESGCM(key)
+
+        try:
+            plaintext = aesgcm.decrypt(iv, ciphertext, None)
+        except InvalidTag:
+            raise ValueError("Invalid password or data corrupted")
+
+        return plaintext.decode("utf-8")
+
+
 
 class _SOLhelper():
     def __init__(self, client = None):
@@ -50,6 +187,10 @@ class _SOLhelper():
 
     def converted_secret_to_private_key(self, private_key: str) -> str:
         return base58.b58decode(private_key).hex()
+    def _get_explorer_link(tx,mode = "mainnet"):
+        _explorer = sdk_const.SOLSCAN
+        _explorer_link = _explorer + tx
+        return _explorer_link + "/devnet" if mode == "devnet" else _explorer_link
     
 
 def extractedParamsChain(data):
@@ -594,3 +735,9 @@ async def get_native_price(
     return await _default_cg.get_price(coin=coin, vs_currency=vs_currency)
 
 
+
+if __name__ == "__main__":
+    _helper = _Helper()
+
+    line = "f.to.100"
+    print(_helper.parse_line(line,default="_from"))
