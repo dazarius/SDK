@@ -1075,18 +1075,16 @@ class SOL:
 
     async def _send_tx(self, tx, key: str = None):
         """
-        Signs and broadcasts a pre-built transaction. Equivalent of EVM sign_and_send.
-
-        Args:
-            tx  (Transaction): Transaction object with .message and .recent_blockhash fields.
-            key (str):         Base58 private key for signing. Falls back to self.KEYPAIR if omitted.
-
-        Returns:
-            dict | False: On success — { "tx": str (signature), "meta": { "symbol", "status", "signature" } }.
-                          On error or unconfirmed transaction — False.
+        Signs and broadcasts a transaction. Accepts:
+          - Transaction object (legacy, with .message/.recent_blockhash)
+          - VersionedTransaction object (with .message but no .recent_blockhash)
+          - bytes / list[int] — raw serialized transaction
+          - str — base64-encoded raw transaction
         """
+        import base64 as _b64
+        from solana.rpc.types import TxOpts
+        from solana.rpc.commitment import Confirmed
         try:
-            # resolve signer keypair
             if key:
                 from solders.keypair import Keypair
                 signer = Keypair.from_base58_string(key)
@@ -1096,32 +1094,64 @@ class SOL:
             if not signer:
                 raise ValueError("No keypair provided for signing")
 
-            # re-sign the transaction with the resolved keypair
-            if hasattr(tx, 'message'):
+            # ── raw bytes / base64 / list → sign as VersionedTransaction ──
+            if isinstance(tx, (bytes, list, tuple, str)):
+                from solders.transaction import VersionedTransaction
+                if isinstance(tx, str):
+                    raw = _b64.b64decode(tx)
+                elif isinstance(tx, (list, tuple)):
+                    raw = bytes(tx)
+                else:
+                    raw = tx
+                vtx = VersionedTransaction.from_bytes(raw)
+                # refresh blockhash — original may have expired (TTL ~60-90s)
+                bh_resp = await self.client.get_latest_blockhash()
+                fresh_bh = bh_resp.value.blockhash
+                msg = vtx.message
+                # MessageV0 is immutable — reconstruct with fresh blockhash
+                from solders.message import MessageV0, Message
+                if isinstance(msg, MessageV0):
+                    msg = MessageV0(
+                        header=msg.header,
+                        account_keys=msg.account_keys,
+                        recent_blockhash=fresh_bh,
+                        instructions=msg.instructions,
+                        address_table_lookups=msg.address_table_lookups,
+                    )
+                else:
+                    msg = Message.new_with_blockhash(msg.instructions, msg.account_keys[0], fresh_bh)
+                signed = VersionedTransaction(msg, [signer])
+                opts = TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
+                resp = await self.client.send_raw_transaction(bytes(signed), opts=opts)
+                tx_hash = str(resp.value)
+                await self.client.confirm_transaction(resp.value, commitment=Confirmed)
+                return tx_hash
+
+            # ── legacy Transaction object ──
+            if hasattr(tx, 'message') and hasattr(tx, 'recent_blockhash'):
                 from solders.transaction import Transaction
                 final_tx = Transaction([signer], tx.message, tx.recent_blockhash)
-            else:
-                raise ValueError("tx must be a Transaction object with message and blockhash")
+                resp = await self.client.send_transaction(final_tx)
+                tx_hash = str(resp.value)
+                confirm = await self.client.confirm_transaction(resp.value)
+                if not confirm.value:
+                    return False
+                return tx_hash
 
-            resp = await self.client.send_transaction(final_tx)
-            tx_hash = str(resp.value)
+            # ── VersionedTransaction object ──
+            if hasattr(tx, 'message'):
+                from solders.transaction import VersionedTransaction
+                signed = VersionedTransaction(tx.message, [signer])
+                opts = TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
+                resp = await self.client.send_raw_transaction(bytes(signed), opts=opts)
+                tx_hash = str(resp.value)
+                await self.client.confirm_transaction(resp.value, commitment=Confirmed)
+                return tx_hash
 
-            confirm = await self.client.confirm_transaction(resp.value)
+            raise ValueError(f"Unsupported tx type: {type(tx)}")
 
-            if not confirm.value:
-                return False
-
-            return {
-                "tx": tx_hash,
-                "meta": {
-                    "symbol": "SOL",
-                    "status": "Success",
-                    "signature": tx_hash
-                }
-            }
-
-        except Exception:
-            return False
+        except Exception as e:
+            return e
     async def _parse_transaction(self, signature: str, retries: int = 5, retry_delay: float = 2.0) -> dict:
         """
         Fetches and parses a transaction by signature using RPC getTransaction.

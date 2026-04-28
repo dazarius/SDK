@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='orbis_pay_sdk',
-    version='1.1.2',
+    version='1.1.3',
     description='OrbisPay SDK for ERC20/ERC721 and P2P smart contract interaction',
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',

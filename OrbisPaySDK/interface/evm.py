@@ -328,6 +328,9 @@ class EVM():
             "nonce": nonce,
             "chainId": self.w3.eth.chain_id,
         }
+        if self.build_tx:
+            return self.w3.to_hex(tx)
+        
         
         return self.sign_and_sand(tx)
     def sign_and_sand(self, tx: dict, key: str = None):
@@ -347,19 +350,16 @@ class EVM():
         if not self.w3:
             raise ValueError("Web3 instance is not initialized in EVM class")
         
-        # Если ключ не передан в метод, берем тот, что в self.key
+        nonce = self.w3.eth.get_transaction_count(self.address)
+        tx["nonce"] = nonce
         target_key = key if key else self.key
 
-        # 1. Подписываем. Используем target_key!
         signed = self.w3.eth.account.sign_transaction(tx, target_key)
 
-        if self.build_tx:
-            return self.w3.to_hex(signed.raw_transaction)
+        
 
-        # 2. Отправляем
         tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
 
-        # 3. Ждем подтверждения
         tx_receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
 
         if tx_receipt.status != 1:
