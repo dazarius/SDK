@@ -22,7 +22,7 @@ class EVM():
             decimals (int):   Token decimals used in balance display. Default: 18.
             contract (str):   ERC20 contract address. Default: null address (native only).
             currency (str):   Currency symbol shown in balance dicts. Default: "ETH".
-            build_tx (bool):  If True, sign_and_sand returns raw signed tx hex instead of broadcasting.
+            build_tx (bool):  If True, returns the raw unsigned tx dict instead of broadcasting.
         """
         self.w3= w3
         self.key = key
@@ -329,11 +329,10 @@ class EVM():
             "chainId": self.w3.eth.chain_id,
         }
         if self.build_tx:
-            return self.w3.to_hex(tx)
-        
-        
-        return self.sign_and_sand(tx)
-    def sign_and_sand(self, tx: dict, key: str = None):
+            return tx
+
+        return self.sign_and_send(tx)
+    def sign_and_send(self, tx: dict, key: str = None):
         """
         Signs a transaction dict, broadcasts it, and waits for confirmation.
 

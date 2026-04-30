@@ -98,7 +98,7 @@ class TON:
         self.wallet_version = version
 
         if version == "wr5":
-            from tonutils.clients.http.clients.toncenter import NetworkGlobalID
+            from tonutils.clients.http.toncenter import NetworkGlobalID
             self._v5_client = ToncenterV3Client(NetworkGlobalID.MAINNET, api_key=self.api_key)
             wallet_v5, pub_k, priv_k, _mnemonics = WalletV5R1.from_mnemonic(
                 client=self._v5_client, mnemonic=mnemonics,
@@ -409,6 +409,17 @@ class TON:
             raise ValueError("Wallet not set. Use set_wallet() first.")
 
         if self.wallet_version == "wr5":
+            if self.build_tx:
+                import base64 as _b64
+                if memo:
+                    body_cell = (
+                        pbegin_cell()
+                        .store_uint(0, 32)
+                        .store_snake_string(memo)
+                        .end_cell()
+                    )
+                    return _b64.b64encode(body_cell.to_boc()).decode()
+                return None
             tx_hash = await self._v5_wallet.transfer(
                 destination=to,
                 amount=amount,
@@ -425,7 +436,6 @@ class TON:
         seqno = await self.get_seqno()
         nano_amount = to_nano(amount, "ton")
 
-        # Build payload (comment)
         payload = memo if memo else None
 
         query = self.wallet.create_transfer_message(
@@ -439,7 +449,7 @@ class TON:
         boc = bytes_to_b64str(boc_bytes)
 
         if self.build_tx:
-            return {"boc": boc, "amount": amount, "to": to}
+            return boc
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -585,6 +595,9 @@ class TON:
                 forward_amount=forward_amount,
                 comment=comment,
             )
+            if self.build_tx:
+                import base64 as _b64
+                return _b64.b64encode(body.to_boc()).decode()
             tx_hash = await self._v5_wallet.transfer(
                 destination=jetton_wallet_address,
                 amount=gas_amount,
@@ -620,7 +633,7 @@ class TON:
         boc = bytes_to_b64str(query["message"].to_boc(False))
 
         if self.build_tx:
-            return {"boc": boc, "jetton_amount": amount, "to": to}
+            return boc
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(

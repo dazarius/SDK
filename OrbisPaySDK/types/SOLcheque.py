@@ -1,4 +1,5 @@
 
+import base64
 import hashlib
 import struct
 import solders
@@ -42,24 +43,34 @@ class SOLCheque:
     def __init__(
         self,
         rpc_url: str = "https://api.mainnet-beta.solana.com",
-        key:str=None,
+        key: str = None,
+        address: str = None,
         program_id = PROGRAM_ID,
+        build_tx: bool = False,
     ):
         """
         Client for the OrbisCheques on-chain program (Anchor).
 
         Args:
-            rpc_url    (str): Solana RPC endpoint.
-            key        (str): Base58-encoded private key for signing.
-            program_id (str): Override the default program ID.
+            rpc_url    (str):  Solana RPC endpoint.
+            key        (str):  Base58-encoded private key for signing.
+            address    (str):  Base58 public key. Used as fee-payer when build_tx=True
+                               and no private key is available (DApp / external wallet flow).
+            program_id (str):  Override the default program ID.
+            build_tx   (bool): If True, return base64-serialized transaction instead of
+                               broadcasting. Signed if key is set, unsigned if address only.
         """
         self.rpc_url      = rpc_url
         self.provider     = Client(rpc_url)
         self.async_client = AsyncClient(rpc_url)
-        self.key          = key
-        self.PROGRAM_ID   = program_id 
+        self.key          = None
+        self.address      = None
+        self.PROGRAM_ID   = program_id
+        self.build_tx     = build_tx
         if key:
             self.set_key(key)
+        if address:
+            self.set_address(address)
 
     def set_key(self, key) -> None:
         """
@@ -75,13 +86,29 @@ class SOLCheque:
         else:
             raise ValueError("key must be a base58 string or Keypair")
 
-    def set_params(self, rpc_url: str = None, key=None) -> None:
+    def set_address(self, address: str) -> None:
         """
-        Update RPC endpoint and/or keypair at runtime.
+        Set the fee-payer address (public key only, no signing capability).
+        Used in build_tx=True mode when signing is done by an external wallet.
 
         Args:
-            rpc_url (str): New RPC endpoint.
-            key     (str | Keypair): New signing keypair.
+            address (str | Pubkey): Base58 public key string or Pubkey object.
+        """
+        if isinstance(address, str):
+            self.address = Pubkey.from_string(address)
+        elif isinstance(address, Pubkey):
+            self.address = address
+        else:
+            raise ValueError("address must be a base58 string or Pubkey")
+
+    def set_params(self, rpc_url: str = None, key=None, address: str = None) -> None:
+        """
+        Update RPC endpoint, keypair, and/or address at runtime.
+
+        Args:
+            rpc_url (str):          New RPC endpoint.
+            key     (str|Keypair):  New signing keypair.
+            address (str):          New fee-payer address (public key).
         """
         if rpc_url:
             self.rpc_url      = rpc_url
@@ -89,6 +116,8 @@ class SOLCheque:
             self.async_client = AsyncClient(rpc_url)
         if key:
             self.set_key(key)
+        if address:
+            self.set_address(address)
 
     # ── PDA derivation ────────────────────────────────────────────────────────
 
@@ -270,10 +299,38 @@ class SOLCheque:
 
     # ── Internal tx helpers ───────────────────────────────────────────────────
 
+    def _payer_pubkey(self):
+        if self.key:
+            return self.key.pubkey()
+        if self.address:
+            return self.address
+        raise ValueError("Neither key nor address is set")
+
+    def _build_tx_base64(self, ixs: list, blockhash, extra_signers: list = None) -> str:
+        payer_pk = self._payer_pubkey()
+        msg = Message.new_with_blockhash(ixs, payer_pk, blockhash)
+        if self.key:
+            seen = {str(payer_pk)}
+            signers = [self.key]
+            for s in (extra_signers or []):
+                pk = str(s.pubkey())
+                if pk not in seen:
+                    seen.add(pk)
+                    signers.append(s)
+            tx = Transaction(message=msg, from_keypairs=signers, recent_blockhash=blockhash)
+        else:
+            # address-only: unsigned transaction for external wallet signing
+            from solders.signature import Signature
+            tx = Transaction.populate(msg, [Signature.default()])
+        return base64.b64encode(bytes(tx)).decode()
+
     def _send(self, ixs: list, extra_signers: list = None) -> str:
-        """Build, sign, and broadcast synchronously. Returns signature string."""
-        payer = self.key
         blockhash = self.provider.get_latest_blockhash().value.blockhash
+        if self.build_tx:
+            return self._build_tx_base64(ixs, blockhash, extra_signers)
+        if not self.key:
+            raise ValueError("key is required to send transactions")
+        payer = self.key
         seen = {str(payer.pubkey())}
         signers = [payer]
         for s in (extra_signers or []):
@@ -286,9 +343,12 @@ class SOLCheque:
         return str(self.provider.send_transaction(tx, opts=TxOpts(skip_preflight=True)).value)
 
     async def _send_async(self, ixs: list, extra_signers: list = None) -> str:
-        """Async version of _send."""
-        payer = self.key
         blockhash = (await self.async_client.get_latest_blockhash()).value.blockhash
+        if self.build_tx:
+            return self._build_tx_base64(ixs, blockhash, extra_signers)
+        if not self.key:
+            raise ValueError("key is required to send transactions")
+        payer = self.key
         seen = {str(payer.pubkey())}
         signers = [payer]
         for s in (extra_signers or []):

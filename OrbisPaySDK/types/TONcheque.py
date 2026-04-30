@@ -29,11 +29,13 @@ class TONCheque:
         mnemonics: Optional[List[str]] = None,
         wallet_version: str = "v4r2",
         contract_address: Optional[str] = None,
+        build_tx: bool = False,
     ):
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
         self.contract_address = contract_address
         self.wallet_version = wallet_version
+        self.build_tx = build_tx
 
         self.ton = TON(
             api_url=api_url,
@@ -49,9 +51,12 @@ class TONCheque:
         mnemonics: Optional[List[str]] = None,
         wallet_version: Optional[str] = None,
         contract_address: Optional[str] = None,
+        build_tx: Optional[bool] = None,
     ):
         if contract_address:
             self.contract_address = contract_address
+        if build_tx is not None:
+            self.build_tx = build_tx
         self.ton.set_params(
             api_url=api_url,
             api_key=api_key,
@@ -106,6 +111,9 @@ class TONCheque:
                 .store_address(PAddress(recipient))       # recipient
                 .end_cell()
             )
+            if self.build_tx:
+                import base64 as _b64
+                return _b64.b64encode(body.to_boc()).decode()
             tx_hash = await self.ton._v5_wallet.transfer(
                 destination=self.contract_address,
                 amount=amount,
@@ -136,6 +144,9 @@ class TONCheque:
         )
 
         boc = bytes_to_b64str(query["message"].to_boc(False))
+
+        if self.build_tx:
+            return boc
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -175,6 +186,9 @@ class TONCheque:
                 .store_bytes(bytes.fromhex(cheque_id))         # cheque_id
                 .end_cell()
             )
+            if self.build_tx:
+                import base64 as _b64
+                return _b64.b64encode(body.to_boc()).decode()
             tx_hash = await self.ton._v5_wallet.transfer(
                 destination=self.contract_address,
                 amount=0.05,
@@ -194,7 +208,6 @@ class TONCheque:
 
         seqno = await self.ton.get_seqno()
 
-        # Small amount of TON for gas
         gas_amount = to_nano(0.05, "ton")
 
         query = self.ton.wallet.create_transfer_message(
@@ -205,6 +218,9 @@ class TONCheque:
         )
 
         boc = bytes_to_b64str(query["message"].to_boc(False))
+
+        if self.build_tx:
+            return boc
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -265,6 +281,9 @@ class TONCheque:
                 .store_ref(forward_body)
                 .end_cell()
             )
+            if self.build_tx:
+                import base64 as _b64
+                return _b64.b64encode(body.to_boc()).decode()
             tx_hash = await self.ton._v5_wallet.transfer(
                 destination=jetton_wallet_address,
                 amount=0.1,
@@ -308,6 +327,9 @@ class TONCheque:
 
         boc = bytes_to_b64str(query["message"].to_boc(False))
 
+        if self.build_tx:
+            return boc
+
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{self.api_url}/sendBoc",
@@ -347,6 +369,9 @@ class TONCheque:
                 .store_bytes(bytes.fromhex(cheque_id))         # cheque_id
                 .end_cell()
             )
+            if self.build_tx:
+                import base64 as _b64
+                return _b64.b64encode(body.to_boc()).decode()
             tx_hash = await self.ton._v5_wallet.transfer(
                 destination=self.contract_address,
                 amount=0.05,
@@ -375,6 +400,9 @@ class TONCheque:
         )
 
         boc = bytes_to_b64str(query["message"].to_boc(False))
+
+        if self.build_tx:
+            return boc
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(

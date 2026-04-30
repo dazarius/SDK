@@ -23,8 +23,6 @@ from typing import List, Dict, Any, Optional
 from solders.keypair import Keypair
 # from solders.signature import Signature
 # from solders.transaction import Transaction
-from spl.token.async_client import AsyncToken
-
 
 from solana.rpc.commitment import Confirmed
 from solana.rpc.async_api import AsyncClient
@@ -465,35 +463,34 @@ class SOL:
         receiver_pubkey = solders.pubkey.Pubkey.from_string(to)
         token_pubkey = solders.pubkey.Pubkey.from_string(self.TOKEN_MINT)
 
-        token = AsyncToken(self.client, token_pubkey, TOKEN_PROGRAM_ID, self.KEYPAIR)
         sender_ata = get_associated_token_address(sender_pubkey, token_pubkey)
         receiver_ata = get_associated_token_address(receiver_pubkey, token_pubkey)
 
-        tx = Transaction()
-
+        ixs = []
         res = await self.client.get_account_info(receiver_ata)
         if res.value is None:
-            tx.add(
-                create_associated_token_account(
-                    payer=sender_pubkey,
-                    owner=receiver_pubkey,
-                    mint=token_pubkey
-                )
-            )
+            ixs.append(create_associated_token_account(
+                payer=sender_pubkey,
+                owner=receiver_pubkey,
+                mint=token_pubkey,
+            ))
 
-        params = TransferParams(
+        ixs.append(transfer(TransferParams(
             program_id=TOKEN_PROGRAM_ID,
             source=sender_ata,
             dest=receiver_ata,
             owner=sender_pubkey,
-            amount=amount
-        )
+            amount=amount,
+        )))
 
-        tx.add(transfer(params))
+        blockhash = (await self.client.get_latest_blockhash()).value.blockhash
+        msg = Message(ixs, sender_pubkey)
+        tx = Transaction([self.KEYPAIR], msg, blockhash)
+
         if self.build_tx:
-            return tx
+            return base64.b64encode(bytes(tx)).decode()
 
-        resp = await self.client.send_transaction(tx, self.KEYPAIR, opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed))
+        resp = await self.client.send_transaction(tx, opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed))
         return resp.value
 
 
@@ -530,7 +527,7 @@ class SOL:
         blockhash_str = latest_blockhash_resp.value.blockhash
         tx = Transaction([self.KEYPAIR], msg, blockhash_str)
         if self.build_tx:
-            return tx
+            return base64.b64encode(bytes(tx)).decode()
         resp =  await self.client.send_transaction(tx)
         return resp.value
 
@@ -1098,29 +1095,25 @@ class SOL:
             if isinstance(tx, (bytes, list, tuple, str)):
                 from solders.transaction import VersionedTransaction
                 if isinstance(tx, str):
-                    raw = _b64.b64decode(tx)
+                    s = tx.strip()
+                    # hex string
+                    if re.fullmatch(r'[0-9a-fA-F]+', s):
+                        raw = bytes.fromhex(s)
+                    else:
+                        try:
+                            raw = _b64.b64decode(s, validate=True)
+                        except Exception:
+                            raise ValueError(
+                                f"tx string is neither valid hex nor base64. "
+                                f"Serialize with bytes(tx).hex() or base64.b64encode(bytes(tx)). "
+                                f"Preview: {s[:80]!r}"
+                            )
                 elif isinstance(tx, (list, tuple)):
                     raw = bytes(tx)
                 else:
                     raw = tx
                 vtx = VersionedTransaction.from_bytes(raw)
-                # refresh blockhash — original may have expired (TTL ~60-90s)
-                bh_resp = await self.client.get_latest_blockhash()
-                fresh_bh = bh_resp.value.blockhash
-                msg = vtx.message
-                # MessageV0 is immutable — reconstruct with fresh blockhash
-                from solders.message import MessageV0, Message
-                if isinstance(msg, MessageV0):
-                    msg = MessageV0(
-                        header=msg.header,
-                        account_keys=msg.account_keys,
-                        recent_blockhash=fresh_bh,
-                        instructions=msg.instructions,
-                        address_table_lookups=msg.address_table_lookups,
-                    )
-                else:
-                    msg = Message.new_with_blockhash(msg.instructions, msg.account_keys[0], fresh_bh)
-                signed = VersionedTransaction(msg, [signer])
+                signed = VersionedTransaction(vtx.message, [signer])
                 opts = TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
                 resp = await self.client.send_raw_transaction(bytes(signed), opts=opts)
                 tx_hash = str(resp.value)
@@ -1509,66 +1502,3 @@ class SOL:
             for r in results
         ]
 
-
-
-# if __name__ == "__main__":
-#     s = SOL()
-#     instruction = [Instruction(
-#     Instruction {
-#         program_id: 11111111111111111111111111111111,
-#         accounts: [
-#             AccountMeta {
-#                 pubkey: C3MhUqKFRkkTRBRZcH7EKoD8c1iose9T3tPb7qiytzxs,
-#                 is_signer: true,
-#                 is_writable: true,
-#             },
-#             AccountMeta {
-#                 pubkey: C3MhUqKFRkkTRBRZcH7EKoD8c1iose9T3tPb7qiytzxs,
-#                 is_signer: false,
-#                 is_writable: true,
-#             },
-#         ],
-#         data: [
-#             2,
-#             0,
-#             0,
-#             0,
-#             0,
-#             225,
-#             245,
-#             5,
-#             0,
-#             0,
-#             0,
-#             0,
-#         ],
-#     },
-# )]
-
-#     run = s.sign_and_send()
-async def test():
-    s = SOL(
-        rpc_url="https://api.devnet.solana.com",
-        KEYPAIR="t14ypHnjBg6cJsJt1cCYiSBsnijVwrUToGFz5bGSDp6mWrME4FGNgdWV8qTZi5NbvsMPJRZUwzAPJsiBTeHmJq1"
-    )
-    s.add_signer("58UYMN6bth7C6NkZp97jPVStv4XEDovnk6BF2bYQynSL5LoFRDQENByhNBs3yMNCUPv1QHxEb68UMpuUMRFYLsUB")
-
-    address_list = ["2U4MLeazpNbvTjrBz9rRgpbFcGn3HN37GuoijKnqc9G2", "BjxJeFZJ1HApM894w4zAdLJKhFUdAQSPKwSZFLEpdJuR", "EMkhZaTAYuDvaXeKpdMAX9qM3b4Y3AZn9QcLqULmohUM"]
-    _instructions = []
-    for address in address_list:
-        inxt_transfer_sol = s.build_sol_transfer_ix(
-            to=address,
-            lamports=int(0.1 * LAMPORTS_PER_SOL),
-            from_pubkey="25jrwTsXY94FtJvsnDpfH8vTnDHHvNzwRGJqX6wKnEJ3"
-        )
-        _instructions.append(inxt_transfer_sol)
-        inxt_transfer_token = await s.build_token_transfer_ix(
-            to=address,
-            amount=int(10 * (10 ** 6)),  # 10 USDC with 6 decimals
-            mint="Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr",  # USDC mint
-        )
-        _instructions.append(inxt_transfer_token)
-    tx = await s.send_instructions(_instructions)
-    print(tx)
-if __name__ == "__main__":
-    asyncio.run(test())
