@@ -8,7 +8,7 @@ from tonsdk.contract.wallet import WalletVersionEnum, Wallets
 from tonsdk.utils import to_nano, from_nano, bytes_to_b64str, Address
 from tonsdk.boc import Cell
 from tonutils.contracts.wallet import WalletV5R1
-from tonutils.clients.http.clients.toncenter import ToncenterClient as ToncenterV3Client
+from tonutils.clients.http.toncenter import ToncenterClient as ToncenterV3Client
 from tonsdk.crypto import mnemonic_new, mnemonic_to_wallet_key
 
 from pytoniq_core import begin_cell as pbegin_cell, Address as PAddress
@@ -242,7 +242,7 @@ class TON:
             try:
                 wv = self.WALLET_VERSIONS[version]
                 if version == "wr5":
-                    from tonutils.clients.http.clients.toncenter import NetworkGlobalID
+                    from tonutils.clients.http.toncenter import NetworkGlobalID
                     client = ToncenterV3Client(NetworkGlobalID.MAINNET, api_key=self.api_key)
                     wallet_v5, _, _, _ = WalletV5R1.from_mnemonic(client=client, mnemonic=self.mnemonics)
                     result[version] = wallet_v5.address.to_str(
@@ -387,6 +387,92 @@ class TON:
         """
         info = await self.get_wallet_info(address)
         return info.get("seqno", 0)
+
+    # ── Address helpers ────────────────────────────────────────────────────────
+
+    _WALLET_TYPE_MAP: Dict[str, str] = {
+        "wallet v1 r1": "v1r1",
+        "wallet v1 r2": "v1r2",
+        "wallet v1 r3": "v1r3",
+        "wallet v2 r1": "v2r1",
+        "wallet v2 r2": "v2r2",
+        "wallet v3 r1": "v3r1",
+        "wallet v3 r2": "v3r2",
+        "wallet v4 r1": "v4r1",
+        "wallet v4 r2": "v4r2",
+        "wallet v5 r1": "wr5",
+        "wallet v5beta r1": "wr5",
+    }
+
+    @staticmethod
+    def normalize_address(address: str, bounceable: bool = True) -> str:
+        """
+        Converts any TON address format (raw workchain:hex or user-friendly base64url)
+        to a canonical 48-character user-friendly string that tonsdk accepts.
+
+        Args:
+            address    (str):  Raw "0:abc..." or user-friendly "EQ..." / "UQ..." address.
+            bounceable (bool): True → bounceable "EQ..." prefix, False → non-bounceable "UQ...".
+
+        Returns:
+            str: 48-character user-friendly TON address.
+
+        Raises:
+            ValueError: If the address cannot be parsed.
+        """
+        try:
+            from tonsdk.utils import Address as _TonAddr
+            addr = _TonAddr(address)
+            return addr.to_string(is_user_friendly=True, is_url_safe=True, is_bounceable=bounceable)
+        except Exception as e:
+            raise ValueError(f"Invalid TON address '{address}': {e}")
+
+    async def get_recipient_wallet_type(self, address: str) -> dict:
+        """
+        Queries TonCenter to detect the wallet contract type of any TON address.
+        Useful for knowing which wallet version a recipient is using before sending.
+
+        Args:
+            address (str): Any valid TON address format (user-friendly or raw).
+
+        Returns:
+            dict: {
+                "address":        str,          # as passed
+                "wallet_type":    str | None,   # raw string from TonCenter e.g. "wallet v4 r2"
+                "wallet_version": str | None,   # short SDK version string: "v4r2", "wr5", etc.
+                "account_state":  str,          # "active", "uninitialized", or "frozen"
+                "balance":        float,         # TON balance
+                "balance_raw":    int,           # nanotons
+                "seqno":          int | None,    # None if not deployed
+            }
+
+        Raises:
+            ValueError: If the TonCenter call fails.
+        """
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{self.api_url}/getWalletInformation",
+                params={"address": address},
+                headers=self._get_headers(),
+            )
+            data = resp.json()
+            if not data.get("ok"):
+                raise ValueError(f"Failed to get wallet info for {address}: {data}")
+
+            result = data["result"]
+            wallet_type: Optional[str] = result.get("wallet_type")
+            wallet_version = self._WALLET_TYPE_MAP.get(wallet_type.lower()) if wallet_type else None
+            balance_nano = int(result.get("balance", 0) or 0)
+
+            return {
+                "address": address,
+                "wallet_type": wallet_type,
+                "wallet_version": wallet_version,
+                "account_state": result.get("account_state", "uninitialized"),
+                "balance": balance_nano / NANOTON,
+                "balance_raw": balance_nano,
+                "seqno": result.get("seqno"),
+            }
 
     async def transfer_native(
         self,
@@ -684,6 +770,34 @@ class TON:
                 if stack and len(stack) > 0:
                     return stack[0]
             return None
+
+    async def send_boc(self, boc: str) -> dict:
+        """
+        Broadcasts a pre-built and signed BOC directly to TonCenter.
+        Use this to send transactions built externally or returned by build_tx=True.
+
+        Args:
+            boc (str): Base64-encoded BOC string (e.g. "te6cck...").
+
+        Returns:
+            dict: {"hash": "<msg_hash_hex>", "ok": True, "result": {...}} on success.
+
+        Raises:
+            ValueError: If TonCenter returns an error.
+        """
+        cell = PCell.one_from_boc(base64.b64decode(boc))
+        msg_hash = cell.hash.hex()
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{self.api_url}/sendBoc",
+                json={"boc": boc},
+                headers=self._get_headers(),
+            )
+            data = resp.json()
+            if not data.get("ok"):
+                raise ValueError(f"sendBoc failed: {data}")
+            return msg_hash
 
     async def get_transactions(
         self, address: Optional[str] = None, limit: int = 10
