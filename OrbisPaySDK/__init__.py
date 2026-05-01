@@ -22,7 +22,8 @@ from OrbisPaySDK.utils.bybit import Bybit
 from OrbisPaySDK.utils.binance import Binance
 from OrbisPaySDK.utils.jupiter import Jupiter
 from OrbisPaySDK.utils.zerox import ZeroX
-
+from OrbisPaySDK.interface import socials
+from OrbisPaySDK.interface.socials import TelegramNotifier, DiscordNotifier, ATProto
 
 
 __all__ = [
@@ -52,4 +53,8 @@ __all__ = [
     "Binance",
     "Jupiter",
     "ZeroX",
+    "socials",
+    "TelegramNotifier",
+    "DiscordNotifier",
+    "ATProto",
 ]
