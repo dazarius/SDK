@@ -1,14 +1,22 @@
-import token
 import OrbisPaySDK
-from OrbisPaySDK.const import __SHADOWPAY_ABI__ERC20__, __ALLOW_CHAINS__, __SHADOWPAY_CONTRACT_ADDRESS__ERC20__, __NULL_ADDRESS__
+from OrbisPaySDK.const import __SHADOWPAY_ABI__ERC20__, __ALLOW_CHAINS__, __SHADOWPAY_CONTRACT_ADDRESS__ERC20__
 from web3 import Web3
 from typing import Optional
-import httpx
-from eth_abi import encode
-from eth_abi.packed import encode_packed
-
-from eth_utils import keccak, to_checksum_address
+from eth_utils import keccak
 import time
+
+try:
+    from web3.middleware import ExtraDataToPOAMiddleware as _POAMiddleware
+except ImportError:
+    from web3.middleware import geth_poa_middleware as _POAMiddleware  # web3 v5
+
+
+def _inject_poa(w3: Web3) -> None:
+    """Inject POA middleware if not already present (needed for BSC, Polygon, etc.)."""
+    for mw in w3.middleware_onion:
+        if mw is _POAMiddleware or (hasattr(mw, 'func') and mw.func is _POAMiddleware):
+            return
+    w3.middleware_onion.inject(_POAMiddleware, layer=0)
 
 class Cheque:
     def __init__(self, w3: Optional[Web3] = None, private_key: Optional[str] = None, ABI=__SHADOWPAY_ABI__ERC20__, allowed_chains=__ALLOW_CHAINS__, retunrn_build_tx: bool = False, address: Optional[str] = None):
@@ -44,6 +52,7 @@ class Cheque:
             return False
 
     def __allow__(self):
+        _inject_poa(self.w3)
         print("Checking if chain is allowed", self.w3.eth.chain_id)
         for chain in self.allowed_chains:
             if chain == self.w3.eth.chain_id:
@@ -72,6 +81,7 @@ class Cheque:
     def set_parameters(self, chain_id: Optional[str] = None, w3: Optional[Web3] = None, amount: Optional[int] = None, private_key: Optional[str] = None, token: Optional[str] = None, address: Optional[str] = None, contract: Optional[str] = None, ABI=__SHADOWPAY_ABI__ERC20__):
         if w3:
             self.w3 = w3
+            _inject_poa(self.w3)
             if contract is None:
                 self.get_contract_for_chain(chain_id=chain_id or self.w3.eth.chain_id)
         if contract:
@@ -125,19 +135,16 @@ class Cheque:
             'chainId': self.w3.eth.chain_id,
         })
         if self.return_build_tx:
-            return txn
+            return txn,cheque_id
 
         signed_txn = self.w3.eth.account.sign_transaction(txn, key)
         txn_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
         txn_receipt = self.w3.eth.wait_for_transaction_receipt(txn_hash)
         if txn_receipt.status != 1:
             return False
-        return {
-            "hash": txn_hash.hex(),
-            "chequeId": cheque_id.hex(),
-        }
+        return  txn_hash.hex(),cheque_id.hex(),
 
-    async def CashOutCheque(self, private_key: str, cheque_id: str):
+    async def CashOutCheque(self, cheque_id: str,private_key: str = None):
         if not private_key:
             private_key = self.private_key
 
@@ -169,14 +176,14 @@ class Cheque:
         ).build_transaction(tx_common)
 
         if self.return_build_tx:
-            return txn
+            return txn,cheque_id
 
         signed_txn = self.w3.eth.account.sign_transaction(txn, private_key=private_key)
         tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
         if receipt.status != 1:
             return False
-        return {"hash": tx_hash.hex()}
+        return tx_hash.hex()
 
     # ── ERC-20 token cheque ────────────────────────────────────────────────────
 
@@ -196,7 +203,16 @@ class Cheque:
 
         erc20 = OrbisPaySDK.ERC20Token(w3=self.w3)
         erc20.set_params(token_address=token_cs)
-        erc20.allowance(spender=self.contract.address, owner=address)
+        current_allowance = erc20.allowance(spender=self.contract.address, owner=address)
+        if current_allowance < amount:
+            approve = erc20.approve(
+                spender=self.contract.address,
+                amount=amount,
+                private_key=key,
+                conveted_amount=False,
+            )
+            if not approve:
+                return False
 
         estimated_gas = self.contract.functions.InitTokenCheque(
             cheque_id, token_cs, amount, reciver_cs, support_bps
@@ -213,17 +229,14 @@ class Cheque:
             'gasPrice': self.w3.eth.gas_price,
         })
         if self.return_build_tx:
-            return txn
+            return txn,cheque_id
 
         signed_txn = self.w3.eth.account.sign_transaction(txn, key)
         txn_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
         txn_receipt = self.w3.eth.wait_for_transaction_receipt(txn_hash)
         if txn_receipt.status != 1:
             return False
-        return {
-            "hash": txn_hash.hex(),
-            "chequeId": cheque_id.hex(),
-        }
+        return txn_hash.hex(),cheque_id.hex()
 
     async def CashOutTokenCheque(self, cheque_id: str, private_key: Optional[str] = None):
         if private_key is None:
@@ -254,7 +267,7 @@ class Cheque:
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
         if receipt.status != 1:
             return False
-        return {"hash": tx_hash.hex(), "status": receipt.status}
+        return tx_hash.hex()
 
     # ── Swap cheque ────────────────────────────────────────────────────────────
 
@@ -274,7 +287,16 @@ class Cheque:
 
         erc20 = OrbisPaySDK.ERC20Token(w3=self.w3)
         erc20.set_params(token_address=token_in_cs)
-        erc20.allowance(spender=self.contract.address, owner=address)
+        current_allowance = erc20.allowance(spender=self.contract.address, owner=address)
+        if current_allowance < amount_in:
+            approve = erc20.approve(
+                spender=self.contract.address,
+                amount=amount_in,
+                private_key=key,
+                conveted_amount=False,
+            )
+            if not approve:
+                return False
 
         estimated_gas = self.contract.functions.InitSwapCheque(
             cheque_id, reciver_cs, token_in_cs, amount_in, token_out_cs, amount_out, support_bps
@@ -291,23 +313,20 @@ class Cheque:
             'gasPrice': self.w3.eth.gas_price,
         })
         if self.return_build_tx:
-            return txn
+            return txn,cheque_id
 
         signed_txn = self.w3.eth.account.sign_transaction(txn, key)
         txn_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
         txn_receipt = self.w3.eth.wait_for_transaction_receipt(txn_hash)
         if txn_receipt.status != 1:
             return False
-        return {
-            "hash": txn_hash.hex(),
-            "chequeId": cheque_id.hex(),
-        }
+        return  txn_hash.hex(),cheque_id.hex()
 
     async def CashOutSwapCheque(self, cheque_id: str, private_key: Optional[str] = None):
         if private_key is None:
             private_key = self.private_key
 
-        swap_detail = await self.getSwaoDetail(cheque_id)
+        swap_detail = await self.getSwapDetail(cheque_id)
         token_out = swap_detail["tokenOut"]
         amount_out = swap_detail["amountOut"]
 
@@ -347,154 +366,37 @@ class Cheque:
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
         if receipt.status != 1:
             return False
-        return {"hash": tx_hash.hex()}
-
-    # ── Invoice logic ──────────────────────────────────────────────────────────
-
-    async def getInvoiceFee(self):
-        fee = self.contract.functions.getFee().call()
-        return {
-            "baseFee": fee[0],
-            "maxFee": fee[1],
-            "feeBps": fee[2],
-            "nextFeeBps": fee[3],
-            "FEE_DENOMINATOR": fee[4],
-        }
-
-    async def createInvoice(self, payer: str, deadline: int, amount: int, merchant: str, value: int, currency: str = None, allowTips=False, allowPartial=False, private_key: Optional[str] = None):
-        if private_key is None:
-            private_key = self.private_key
-
-        timestamp = int(time.time())
-        acc = self.w3.eth.account.from_key(private_key)
-        nonce = self.w3.eth.get_transaction_count(acc.address)
-
-        packed = encode_packed(
-            ['address', 'address', 'uint256', 'uint256', 'uint256'],
-            [merchant, payer, amount, deadline, timestamp]
-        )
-        id = Web3.keccak(packed)
-        hex_id = id.hex()
-
-        estimated_gas = self.contract.functions.createInvoice(
-            id,
-            Web3.to_checksum_address(merchant),
-            Web3.to_checksum_address(currency),
-            amount,
-            deadline,
-            Web3.to_checksum_address(payer),
-            allowTips,
-            allowPartial,
-        ).estimate_gas({
-            "value": value,
-            'from': acc.address,
-            'gasPrice': self.w3.eth.gas_price,
-        })
-        txn = self.contract.functions.createInvoice(
-            id,
-            Web3.to_checksum_address(merchant),
-            Web3.to_checksum_address(currency),
-            amount,
-            deadline,
-            Web3.to_checksum_address(payer),
-            allowTips,
-            allowPartial,
-        ).build_transaction({
-            "value": value,
-            'from': acc.address,
-            'nonce': nonce,
-            'gas': estimated_gas,
-            'gasPrice': self.w3.eth.gas_price,
-        })
-        try:
-            sign_txn = self.w3.eth.account.sign_transaction(txn, private_key=private_key)
-            tx = self.w3.eth.send_raw_transaction(sign_txn.raw_transaction)
-            if self.w3.eth.wait_for_transaction_receipt(tx).status != 1:
-                return False
-            return hex_id, tx.hex()
-        except Exception as e:
-            print(f"Error creating invoice: {e}")
-            return False
-
-    async def payETHInvoice(self, id: str, amount: int, private_key: Optional[str] = None, tip=0):
-        fees = await self.getInvoiceFee()
-        if private_key is None:
-            private_key = self.private_key
-        value = amount + (tip * fees["nextFeeBps"]) // fees["FEE_DENOMINATOR"]
-
-        acc = self.w3.eth.account.from_key(private_key)
-        nonce = self.w3.eth.get_transaction_count(acc.address)
-        estimated_gas = self.contract.functions.payETH(
-            Web3.to_bytes(hexstr=id), amount, tip
-        ).estimate_gas({
-            'value': value,
-            'from': acc.address,
-            'gasPrice': self.w3.eth.gas_price,
-        })
-        txn = self.contract.functions.payETH(
-            Web3.to_bytes(hexstr=id), amount, tip
-        ).build_transaction({
-            "value": value,
-            'from': acc.address,
-            'nonce': nonce,
-            'gas': estimated_gas,
-            'gasPrice': self.w3.eth.gas_price,
-        })
-        try:
-            sign_txn = self.w3.eth.account.sign_transaction(txn, private_key=private_key)
-            tx = self.w3.eth.send_raw_transaction(sign_txn.raw_transaction)
-            if self.w3.eth.wait_for_transaction_receipt(tx).status != 1:
-                return False
-            return tx.hex()
-        except Exception as e:
-            print(f"Error paying invoice: {e}")
-            return False
-
-    async def payERC20invoice(self, id, amount, tip=0, private_key=None):
-        fees = await self.getInvoiceFee()
-        value = fees["baseFee"]
-        if private_key is None:
-            private_key = self.private_key
-
-        sender = self.w3.eth.account.from_key(private_key).address
-        nonce = self.w3.eth.get_transaction_count(sender)
-        estimated_gas = self.contract.functions.payERC20(
-            Web3.to_bytes(hexstr=id), amount, tip
-        ).estimate_gas({
-            'value': value,
-            'from': sender,
-            'gasPrice': self.w3.eth.gas_price,
-            'nonce': nonce,
-        })
-        txn = self.contract.functions.payERC20(
-            Web3.to_bytes(hexstr=id), amount, tip
-        ).build_transaction({
-            'value': value,
-            'from': sender,
-            'gas': estimated_gas,
-            'gasPrice': self.w3.eth.gas_price,
-            'nonce': nonce,
-        })
-        try:
-            sign_txn = self.w3.eth.account.sign_transaction(txn, private_key=private_key)
-            tx = self.w3.eth.send_raw_transaction(sign_txn.raw_transaction)
-            if self.w3.eth.wait_for_transaction_receipt(tx).status != 1:
-                return False
-            return tx.hex()
-        except Exception as e:
-            print(f"Error paying invoice: {e}")
-            return False
+        return tx_hash.hex()
 
     # ── Read functions ─────────────────────────────────────────────────────────
 
     async def getComunityPool(self):
         return self.contract.functions.getCollectedFee().call()
 
+    async def getBalance(self):
+        return self.contract.functions.getBalance().call()
+
     async def getOwner(self):
         return self.contract.functions.getOwner().call()
 
     async def getTreasery(self):
         return self.contract.functions.getTreasery().call()
+
+    async def getProtocolStats(self):
+        s = self.contract.functions.getProtocolStats().call()
+        return {
+            "balance": s[0],
+            "collectedFees": s[1],
+            "feeBps": s[2],
+            "feeDenominator": s[3],
+            "treasury": s[4],
+            "owner": s[5],
+            "active": s[6],
+            "nextWithdraw": s[7],
+        }
+
+    async def nextAvailableWithdraw(self):
+        return self.contract.functions.nextAvailableWithdraw().call()
 
     async def getChequeInfo(self, cheque_id: str, address: Optional[str] = None):
         if not cheque_id:
@@ -507,9 +409,9 @@ class Cheque:
             cheque_id_bytes32, address or self.address
         ).call()
         return {
-            "sender": cheque_info[0],
-            "receiver": cheque_info[1],
-            "status": "claimed" if cheque_info[2] else "unclaimed",
+            "amount": cheque_info[0],
+            "receivers": cheque_info[1],
+            "claimed": cheque_info[2],
         }
 
     async def getTokenChequeInfo(self, cheque_id: str):
@@ -521,11 +423,11 @@ class Cheque:
             "sender": cheque_info[0],
             "token": cheque_info[1],
             "amount": cheque_info[2],
-            "receivers": cheque_info[3],
-            "status": cheque_info[4],
+            "receiver": cheque_info[3],
+            "claimed": cheque_info[4],
         }
 
-    async def getSwaoDetail(self, cheque_id: str):
+    async def getSwapDetail(self, cheque_id: str):
         cheque_id_bytes32 = Web3.to_bytes(hexstr=cheque_id).rjust(32, b'\x00')
         s = self.contract.functions.getSwapDetail(cheque_id_bytes32).call()
         return {
@@ -535,7 +437,7 @@ class Cheque:
             "amountOut": s[3],
             "spender": s[4],
             "receiver": s[5],
-            "status": "claimed" if s[6] else "unclaimed",
+            "claimed": s[6],
         }
 
     async def getFees(self):

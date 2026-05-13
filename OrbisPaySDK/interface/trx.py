@@ -99,6 +99,16 @@ class TRX:
             build_tx     (bool): If True, transfer_* methods return the signed transaction
                                  instead of broadcasting to the network.
         """
+        # support embedded api_key in URL: https://api.trongrid.io?api_key=xxx
+        if api_key is None and provider_url and "api_key=" in provider_url:
+            from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+            parsed = urlparse(provider_url)
+            params = parse_qs(parsed.query)
+            extracted = params.pop("api_key", [None])[0]
+            clean_query = urlencode({k: v[0] for k, v in params.items()})
+            provider_url = urlunparse(parsed._replace(query=clean_query))
+            api_key = extracted
+
         self.network = network
         self.private_key = None
         self.address = None
@@ -107,9 +117,23 @@ class TRX:
 
         if provider_url:
             provider = HTTPProvider(provider_url, api_key=api_key) if api_key else HTTPProvider(provider_url)
-            self.client = Tron(provider=provider)
         else:
-            self.client = Tron(network=network)
+            base_url = TRX_NETWORKS.get(network, TRX_NETWORKS["mainnet"])
+            provider = HTTPProvider(base_url, api_key=api_key) if api_key else HTTPProvider(base_url)
+
+        # attach retry adapter: auto-retry on 429/503 with backoff
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        _retry = Retry(
+            total=4,
+            backoff_factor=1.5,
+            status_forcelist=[429, 503],
+            allowed_methods=["GET", "POST"],
+            raise_on_status=False,
+        )
+        provider.sess.mount("https://", HTTPAdapter(max_retries=_retry))
+        provider.sess.mount("http://",  HTTPAdapter(max_retries=_retry))
+        self.client = Tron(provider=provider)
 
         if private_key:
             self.set_private_key(private_key)

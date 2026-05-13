@@ -12,7 +12,35 @@ from dataclasses import dataclass
 from typing import Union, Optional, Dict, List
 import base58
 import base64
+from functools import wraps
+import asyncio, inspect
 
+
+
+def _await(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        result = func(*args, **kwargs)
+        if inspect.isawaitable(result):
+            try:
+                loop = asyncio.get_running_loop()
+                return loop.run_until_complete(result)
+            except RuntimeError:
+                return asyncio.run(result)
+        return result
+    return wrapper
+
+
+
+def timer(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        result = func(*args, **kwargs)
+        end = time.perf_counter()
+        print(f"{func.__name__} completed for {end - start:.4f} sec")
+        return result
+    return wrapper
 
 @dataclass 
 class Cheque():
@@ -47,19 +75,38 @@ class baseTranserParams:
 
 @dataclass
 class Chaque:
-    
-    baseTranserParam:baseTranserParams = None 
+
+    baseTranserParam:baseTranserParams = None
     contract:str = None
-    
+
+
+@dataclass
+class ChequeParams:
+    """
+    Unified cheque parameters for all cheque types:
+      - native:  token=None,  token_out=None
+      - token:   token=<addr>, token_out=None
+      - swap:    token=<token_in>, token_out=<token_out>, amount_out=<amount>
+
+    recipients: single address (str) or list of addresses for multi-receiver native cheques.
+    """
+    amount: any
+    support_bps: any
+    recipients: Union[str, List[str]]
+    token: Optional[str] = None
+    token_out: Optional[str] = None
+    amount_out: Optional[any] = None
+
 
 class _Helper():
-    def __init__(self, sep: str  = ".", comment_char:str = " ",_KDF_ITERATIONS: int = 390_000, _SALT_SIZE: int = 16, _IV_SIZE: int = 12, _KEY_SIZE: int = 32):
+    def __init__(self, obj = None, sep: str  = ".", comment_char:str = " ",_KDF_ITERATIONS: int = 390_000, _SALT_SIZE: int = 16, _IV_SIZE: int = 12, _KEY_SIZE: int = 32):
         self.sep: str  = sep
         self.comment_char:str =  comment_char
         self._KDF_ITERATIONS = _KDF_ITERATIONS
         self._SALT_SIZE = _SALT_SIZE
         self._IV_SIZE = _IV_SIZE
         self._KEY_SIZE = _KEY_SIZE
+        self.obj = obj
     def parse_line(self, line: str, sep: str = None, label: str = "transfer", default="requier") -> list[str]:
         """
         Parse a line into [from, to, amount].
@@ -108,6 +155,35 @@ class _Helper():
 
         return parts
 
+
+    def deep_get(self, data, keys: list, default=None):
+        """
+        Iteratively search the entire nested structure for any key in *keys*.
+        Tries each key in order; returns the value of the first one found (depth-first).
+        Returns *default* if none of the keys exist anywhere in the structure.
+
+        Examples:
+            data = {"chains": {"evm": {"rpc": "https://...", "tokens": ["USDT"]}}}
+
+            deep_get(data, ["rpc"])              → "https://..."
+            deep_get(data, ["tokens"])           → ["USDT"]
+            deep_get(data, ["missing"], "N/A")   → "N/A"
+            deep_get(data, ["missing", "rpc"])   → "https://..."  (fallback to next key)
+        """
+        from collections import deque
+
+        for key in keys:
+            stack = deque([data])
+            while stack:
+                obj = stack.pop()
+                if isinstance(obj, dict):
+                    if key in obj:
+                        val = obj[key]
+                        return val if val is not None else default
+                    stack.extend(obj.values())
+                elif isinstance(obj, (list, tuple)):
+                    stack.extend(obj)
+        return default
 
     def _derive_key(self,password: str, salt: bytes) -> bytes:
         """Derive a 256-bit key from a password using PBKDF2-HMAC-SHA256."""
@@ -257,6 +333,9 @@ def _format_tx(explorer,tx_hash: str) -> str:
 
 import asyncio as _aio
 from typing import Any
+
+
+
 
 
 class _BaseProvider:
@@ -733,11 +812,67 @@ async def get_native_price(
 ) -> float:
     """Shortcut: ``CoinGecko().get_price(coin, vs_currency)``."""
     return await _default_cg.get_price(coin=coin, vs_currency=vs_currency)
+def _rand_str(n=8):
+        return "".join(random.choices(string.ascii_lowercase, k=n))
+_helper = _Helper()
+@timer
+def main():
+        # Build a flat dict with 10_000 entries, one known nested target buried inside
+        flat = {_rand_str(): _rand_str() for _ in range(1000)}
+        flat["chain_meta"] = {
+            "evm": {
+                "rpc": "https://mainnet.infura.io",
+                "tokens": ["USDT", "USDC"],
+                "target_key": "FOUND_IT",
+            }
+        }
+        flat["extra_a"] = [{"noise": _rand_str()} for _ in range(50)]
+        flat["extra_b"] = {_rand_str(): {"nested": _rand_str()} for _ in range(50)}
+
+        N = 1_000  # number of benchmark iterations
+
+        scenarios = [
+            ("hit  — key at shallow level",   ["tokens"],     flat),
+            ("hit  — key deep in nested dict", ["target_key"], flat),
+            ("miss — key not present",         ["xxxxxxxx"],   flat),
+            ("multi-key, first hits",          ["tokens", "xxxxxxxx"], flat),
+            ("multi-key, second hits",         ["xxxxxxxx", "target_key"], flat),
+        ]
+
+        print(f"\n{'Scenario':<42} {'N':>6}  {'total ms':>9}  {'per-call µs':>11}  {'result'}")
+        print("-" * 95)
+
+        for label, keys, d in scenarios:
+            t0 = time.perf_counter()
+            for _ in range(N):
+                result = _helper.deep_get(data=d, keys=keys, default="NOT_FOUND")
+            elapsed = time.perf_counter() - t0
+            total_ms = elapsed * 1000
+            per_us   = elapsed / N * 1_000_000
+            short = repr(result)[:30]
+            print(f"{label:<42} {N:>6}  {total_ms:>9.2f}  {per_us:>11.2f}  {short}")
+
+        print()
+
 
 
 
 if __name__ == "__main__":
-    _helper = _Helper()
+    import time
+    import random
+    import string
+    # def _rand_str(n=8):
+    #         return "".join(random.choices(string.ascii_lowercase, k=n))
+    # _pass = _rand_str(10)
+    # _key = {
+    #     "w":"efcwad",
+    #     "k":"efwcaefwdfcvwaseceazDsfzFCsezdf"
+    # }
+    
+    # encrypt_private_key = _helper.encrypt_private_key(str(_key), _pass)
+    # decrypt_private_key = _helper.decrypt_private_key(encrypt_private_key,_pass)
+    # print("[encrypt_private_key]:", " ", encrypt_private_key)
+    # print("[decrypt_private_key]:", " " ,dict(decrypt_private_key))
+    main()
 
-    line = "f.to.100"
-    print(_helper.parse_line(line,default="_from"))
+    

@@ -1081,7 +1081,9 @@ class SOL:
         import base64 as _b64
         from solana.rpc.types import TxOpts
         from solana.rpc.commitment import Confirmed
+        tx_hash = None
         try:
+
             if key:
                 from solders.keypair import Keypair
                 signer = Keypair.from_base58_string(key)
@@ -1096,7 +1098,6 @@ class SOL:
                 from solders.transaction import VersionedTransaction
                 if isinstance(tx, str):
                     s = tx.strip()
-                    # hex string
                     if re.fullmatch(r'[0-9a-fA-F]+', s):
                         raw = bytes.fromhex(s)
                     else:
@@ -1117,34 +1118,111 @@ class SOL:
                 opts = TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
                 resp = await self.client.send_raw_transaction(bytes(signed), opts=opts)
                 tx_hash = str(resp.value)
-                await self.client.confirm_transaction(resp.value, commitment=Confirmed)
-                return tx_hash
 
             # ── legacy Transaction object ──
-            if hasattr(tx, 'message') and hasattr(tx, 'recent_blockhash'):
+            elif hasattr(tx, 'message') and hasattr(tx, 'recent_blockhash'):
                 from solders.transaction import Transaction
                 final_tx = Transaction([signer], tx.message, tx.recent_blockhash)
                 resp = await self.client.send_transaction(final_tx)
                 tx_hash = str(resp.value)
-                confirm = await self.client.confirm_transaction(resp.value)
-                if not confirm.value:
-                    return False
-                return tx_hash
 
             # ── VersionedTransaction object ──
-            if hasattr(tx, 'message'):
+            elif hasattr(tx, 'message'):
                 from solders.transaction import VersionedTransaction
                 signed = VersionedTransaction(tx.message, [signer])
                 opts = TxOpts(skip_preflight=False, preflight_commitment=Confirmed)
                 resp = await self.client.send_raw_transaction(bytes(signed), opts=opts)
                 tx_hash = str(resp.value)
-                await self.client.confirm_transaction(resp.value, commitment=Confirmed)
-                return tx_hash
 
-            raise ValueError(f"Unsupported tx type: {type(tx)}")
+            else:
+                raise ValueError(f"Unsupported tx type: {type(tx)}")
+
+            confirm = await self.confirm_tx(signature=tx_hash)
+            if not confirm["confirmed"]:
+                return {"error": confirm["error"], "status": confirm["status"]}
+            return tx_hash
 
         except Exception as e:
             return e
+    async def confirm_tx(
+        self,
+        signature: str,
+        commitment: str = "confirmed",
+        timeout: float = 60.0,
+        poll_interval: float = 2.0,
+    ) -> dict:
+        """
+        Polls getSignatureStatuses until the transaction reaches the requested
+        commitment level, fails on-chain, or the timeout expires.
+
+        Args:
+            signature     (str):   Base58 transaction signature.
+            commitment    (str):   Target commitment: "processed" | "confirmed" | "finalized".
+            timeout       (float): Max seconds to wait before giving up.
+            poll_interval (float): Seconds between RPC polls.
+
+        Returns:
+            dict: {
+                "signature":   str,
+                "confirmed":   bool,          # True if reached target commitment without error
+                "status":      str,           # "confirmed" | "finalized" | "processed"
+                                              # | "failed" | "timeout" | "not_found"
+                "error":       dict | None,   # on-chain error object, or None
+                "slot":        int | None,
+                "confirmations": int | None,  # None once finalized
+            }
+        """
+        COMMITMENT_ORDER = {"processed": 0, "confirmed": 1, "finalized": 2}
+        target_level = COMMITMENT_ORDER.get(commitment, 1)
+
+        deadline = asyncio.get_event_loop().time() + timeout
+
+        while asyncio.get_event_loop().time() < deadline:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getSignatureStatuses",
+                "params": [[signature], {"searchTransactionHistory": True}],
+            }
+            async with httpx.AsyncClient() as client:
+                r = await client.post(self.rpc_url, json=payload, timeout=15)
+                data = r.json()
+
+            statuses = (data.get("result") or {}).get("value") or []
+            st = statuses[0] if statuses else None
+
+            if st is None:
+                await asyncio.sleep(poll_interval)
+                continue
+
+            err = st.get("err")
+            conf_status = st.get("confirmationStatus") or ""  # processed/confirmed/finalized
+            current_level = COMMITMENT_ORDER.get(conf_status, -1)
+
+            base = {
+                "signature":     signature,
+                "error":         err,
+                "slot":          st.get("slot"),
+                "confirmations": st.get("confirmations"),
+            }
+
+            if err:
+                return {**base, "confirmed": False, "status": "failed"}
+
+            if current_level >= target_level:
+                return {**base, "confirmed": True, "status": conf_status}
+
+            await asyncio.sleep(poll_interval)
+
+        return {
+            "signature":     signature,
+            "confirmed":     False,
+            "status":        "timeout",
+            "error":         None,
+            "slot":          None,
+            "confirmations": None,
+        }
+
     async def _parse_transaction(self, signature: str, retries: int = 5, retry_delay: float = 2.0) -> dict:
         """
         Fetches and parses a transaction by signature using RPC getTransaction.

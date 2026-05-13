@@ -13,10 +13,11 @@ from tonsdk.crypto import mnemonic_new, mnemonic_to_wallet_key
 
 from pytoniq_core import begin_cell as pbegin_cell, Address as PAddress
 from pytoniq_core import Cell as PCell
+from OrbisPaySDK.utils.utils import _Helper 
 
 NANOTON = 1_000_000_000  # 1 TON = 1,000,000,000 nanotons
 DECIMALS = 9
-DEFAULT_VERSION = "wr5" 
+DEFAULT_VERSION = "v3r1" 
 coigeco_id = "ton"
 currency_sym = "$"
 
@@ -57,6 +58,15 @@ class TON:
             build_tx       (bool):      If True, transfer_* methods return the BOC instead of broadcasting.
                                         Only supported for legacy wallet versions (v3r1, v3r2, v4r2).
         """
+        # support embedded api_key in URL: https://toncenter.com/api/v2?api_key=xxx
+        if api_key is None and api_url and "api_key=" in api_url:
+            from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+            parsed = urlparse(api_url)
+            params = parse_qs(parsed.query)
+            extracted = params.pop("api_key", [None])[0]
+            clean_query = urlencode({k: v[0] for k, v in params.items()})
+            api_url = urlunparse(parsed._replace(query=clean_query))
+            api_key = extracted
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
         self.build_tx = build_tx
@@ -754,22 +764,33 @@ class TON:
         if not owner:
             owner = self.get_address()
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{self.api_url}/runGetMethod",
-                json={
-                    "address": jetton_master,
-                    "method": "get_wallet_address",
-                    "stack": [["tvm.Slice", owner]],
-                },
-                headers=self._get_headers(),
-            )
-            data = resp.json()
-            if data.get("ok"):
-                stack = data["result"].get("stack", [])
-                if stack and len(stack) > 0:
-                    return stack[0]
-            return None
+        # Encode owner address as BOC cell — TonCenter runGetMethod requires
+        # address arguments as base64-encoded BOC slices, not plain strings.
+        owner_boc = base64.b64encode(
+            bytes(pbegin_cell().store_address(PAddress(owner)).end_cell().to_boc())
+        ).decode()
+
+        data = await self._run_get_method(
+            jetton_master, "get_wallet_address", [["tvm.Slice", owner_boc]]
+        )
+
+        if not data.get("ok"):
+            raise ValueError(f"get_wallet_address RPC error: {data}")
+        stack = data["result"].get("stack", [])
+        if not stack:
+            raise ValueError(f"get_wallet_address returned empty stack: {data['result']}")
+
+        item = stack[0]
+        # TonCenter v2 returns ["tvm.Slice"/"cell", "<base64_boc>"] or ["cell", {"bytes": "..."}]
+        raw = item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else item
+        if isinstance(raw, dict):
+            raw = raw.get("bytes") or raw.get("boc") or ""
+        try:
+            cell = PCell.one_from_boc(base64.b64decode(raw))
+            addr = cell.begin_parse().load_address()
+            return addr.to_str(is_user_friendly=True, is_url_safe=True, is_bounceable=False)
+        except Exception as e:
+            raise ValueError(f"address decode failed (stack[0]={item}): {e}")
 
     async def send_boc(self, boc: str) -> dict:
         """
@@ -853,6 +874,153 @@ class TON:
             if data.get("ok"):
                 return data["result"]
             raise ValueError(f"Failed to get jetton data: {data}")
+
+    @staticmethod
+    def _parse_stack_int(item) -> int:
+        """Parse a TonCenter stack num entry: ['num', '0x...'] or ['num', '123']."""
+        val = item[1] if isinstance(item, (list, tuple)) and len(item) > 1 else item
+        if isinstance(val, int):
+            return val
+        val = str(val).strip()
+        if val.startswith("0x") or val.startswith("0X"):
+            return int(val, 16)
+        return int(val)
+
+    async def _run_get_method(self, address: str, method: str, stack: list,
+                              retries: int = 3, retry_delay: float = 1.5) -> dict:
+        """Calls runGetMethod with automatic retry on 429 rate-limit responses."""
+        for attempt in range(retries):
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"{self.api_url}/runGetMethod",
+                    json={"address": address, "method": method, "stack": stack},
+                    headers=self._get_headers(),
+                )
+                data = resp.json()
+            if data.get("ok"):
+                return data
+            if data.get("code") == 429 and attempt < retries - 1:
+                await asyncio.sleep(retry_delay * (attempt + 1))
+                continue
+            return data
+        return data
+
+    async def get_jetton_balance(
+        self,
+        jetton_master: str,
+        owner_address: Optional[str] = None,
+    ) -> dict:
+        """
+        Returns the Jetton token balance for an owner address.
+
+        Fetches the personal Jetton wallet address for the owner, reads its balance
+        via get_wallet_data, and enriches the result with symbol/decimals from
+        TonCenter getTokenData (best-effort — falls back to defaults on parse error).
+
+        Args:
+            jetton_master  (str): Jetton master contract address.
+            owner_address  (str): Owner TON address. Defaults to the active wallet.
+
+        Returns:
+            dict: {
+                "symbol":        str,   # e.g. "USDT"  (or "JETTON" if unknown)
+                "name":          str,   # full token name
+                "decimals":      int,   # token decimals (or 9 if unknown)
+                "balance":       float, # human-readable amount
+                "raw_balance":   int,   # amount in minimal units
+                "jetton_wallet": str,   # derived Jetton wallet address
+                "jetton_master": str,   # master contract address (echo)
+            }
+
+        Raises:
+            ValueError: If the Jetton wallet address cannot be determined or the
+                        balance RPC call fails.
+        """
+        if not owner_address:
+            owner_address = self.get_address()
+
+        import hashlib as _hl
+        _KNOWN = {_hl.sha256(k.encode()).digest(): k
+                  for k in ("uri", "name", "description", "image", "symbol", "decimals")}
+
+        # Phase 1: derive jetton wallet + fetch jetton master metadata in parallel
+        async def _fetch_wallet_addr() -> str:
+            return await self.get_jetton_wallet_address(jetton_master, owner_address)
+
+        async def _fetch_master_meta() -> dict:
+            """Returns parsed attrs dict from get_jetton_data content cell."""
+            attrs: dict = {}
+            try:
+                jd = await self._run_get_method(jetton_master, "get_jetton_data", [])
+                if not jd.get("ok"):
+                    return attrs
+                jstack = jd["result"].get("stack", [])
+                if len(jstack) < 4:
+                    return attrs
+                raw_cell = jstack[3][1]
+                if isinstance(raw_cell, dict):
+                    raw_cell = raw_cell.get("bytes") or raw_cell.get("boc") or ""
+                cs = PCell.one_from_boc(base64.b64decode(raw_cell)).begin_parse()
+                prefix = cs.load_uint(8)
+                if prefix == 0x01:
+                    attrs["uri"] = cs.load_snake_string().lstrip("\x00")
+                elif prefix == 0x00:
+                    hmap = cs.load_dict(256)
+                    for k_int, v_slice in (hmap or {}).items():
+                        attr_name = _KNOWN.get(k_int.to_bytes(32, "big"))
+                        if attr_name and v_slice.remaining_refs > 0:
+                            raw_val = v_slice.load_ref().begin_parse().load_snake_string().lstrip("\x00")
+                            attrs[attr_name] = raw_val
+                # follow off-chain URI
+                uri = attrs.get("uri", "")
+                if uri.startswith("http"):
+                    async with httpx.AsyncClient(timeout=6) as c:
+                        rj = await c.get(uri)
+                        attrs.update(rj.json())
+            except Exception:
+                pass
+            return attrs
+
+        jetton_wallet, meta_attrs = await asyncio.gather(
+            _fetch_wallet_addr(), _fetch_master_meta()
+        )
+
+        if not jetton_wallet:
+            raise ValueError(
+                f"Could not resolve Jetton wallet for master={jetton_master} owner={owner_address}"
+            )
+
+        # Phase 2: read balance from the personal jetton wallet
+        raw_balance = 0
+        data = await self._run_get_method(jetton_wallet, "get_wallet_data", [])
+        if not data.get("ok"):
+            raise ValueError(f"get_wallet_data failed: {data}")
+        stack = data["result"].get("stack", [])
+        if stack:
+            try:
+                raw_balance = self._parse_stack_int(stack[0])
+            except Exception:
+                raw_balance = 0
+
+        # Apply metadata
+        symbol = str(meta_attrs["symbol"]) if meta_attrs.get("symbol") else "JETTON"
+        name   = str(meta_attrs["name"])   if meta_attrs.get("name")   else ""
+        decimals = 9
+        if meta_attrs.get("decimals") is not None:
+            try:
+                decimals = int(meta_attrs["decimals"])
+            except (ValueError, TypeError):
+                pass
+
+        return {
+            "symbol":        symbol,
+            "name":          name or symbol,
+            "decimals":      decimals,
+            "raw_balance":   raw_balance,
+            "balance":       raw_balance / (10 ** decimals),
+            "jetton_wallet": str(jetton_wallet),
+            "jetton_master": jetton_master,
+        }
 
     # ------------------------------------------------------------------ #
     #  Transaction parsing                                                 #
