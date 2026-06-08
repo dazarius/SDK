@@ -1,4 +1,5 @@
 import OrbisPaySDK
+
 from web3 import Web3
 from web3 import AsyncWeb3
 from web3.providers.persistent import WebSocketProvider
@@ -17,12 +18,14 @@ from OrbisPaySDK.const import __ERC20_ABI__
 
 
 class ERC20Token:
-    def __init__(self, build_tx = False,  w3: Optional[Web3] = None, explorer: Optional[str] = None, contract = None):
+    def __init__(self,owner = None,private_key = None, build_tx = False,  w3: Optional[Web3] = None, explorer: Optional[str] = None, contract = None):
         self.web3 = w3
         self.explorer = explorer
         self.build_tx = build_tx
-
+        self.owner = owner
+        self.private_key = private_key
         self.address = None
+
         self.contract = contract
 
     def set_params(self, token_address: Optional[str] = None, w3:Optional[Web3] = None):
@@ -52,16 +55,19 @@ class ERC20Token:
         self._ensure_contract()
         return self.contract.functions.symbol().call()
 
-    def get_balance(self, wallet_address: str, decimals = None) -> float:
+    def get_balance(self, wallet_address: str = None, decimals = None) -> float:
+        if wallet_address is None:
+            wallet_address = self.owner
         if decimals is None:
             decimals = self.get_decimals()
         self._ensure_contract()
         raw = self.contract.functions.balanceOf(Web3.to_checksum_address(wallet_address)).call()
         data = {
             "balance":raw,
-            "balance_ui":raw * (10 ** decimals)
+            "balance_ui":raw / (10 ** decimals),
+            "decimals":decimals
         }
-        return raw 
+        return data 
     def get_metadata(self):
         symbol = self.get_symbol()
         decimals = self.get_decimals()
@@ -73,8 +79,10 @@ class ERC20Token:
             "token_contract": contract,
         }
 
-    def allowance(self, owner: str, spender: str) -> float:
+    def allowance(self,spender: str, owner: str = None) -> int:
         self._ensure_contract()
+        if owner is None:
+            owner = self.owner
         raw = self.contract.functions.allowance(
             Web3.to_checksum_address(owner),
             Web3.to_checksum_address(spender)
@@ -89,21 +97,24 @@ class ERC20Token:
             return True
         return self.approve(private_key, spender, amount, conveted_amount=converted_amount)
 
-    def transfer(self, private_key: str, to: str, amount: float, decimals: int = None) -> str:
+    def _gas_params(self) -> dict:
+        latest = self.web3.eth.get_block('latest')
+        if latest.get('baseFeePerGas') is not None:
+            tip = self.web3.eth.max_priority_fee
+            base = latest['baseFeePerGas']
+            return {'maxPriorityFeePerGas': int(tip), 'maxFeePerGas': int(base * 2 + tip)}
+        return {'gasPrice': int(self.web3.eth.gas_price * 1.1)}
+
+    def transfer(self, private_key: str, to: str, amount) -> str:
         self._ensure_contract()
         account = self.web3.eth.account.from_key(private_key)
-        if decimals is None:
-            decimals = self.get_decimals()
-        
-        amount = int(amount * (10 ** decimals))
-        
+        gas_params = self._gas_params()
+
         estimated_gas = self.contract.functions.transfer(
             Web3.to_checksum_address(to),
             amount
-        ).estimate_gas({
-            'from': account.address,
-            'gasPrice': self.web3.to_wei('5', 'gwei'),
-        })
+        ).estimate_gas({'from': account.address, **gas_params})
+
         txn = self.contract.functions.transfer(
             Web3.to_checksum_address(to),
             amount
@@ -111,14 +122,14 @@ class ERC20Token:
             'from': account.address,
             'nonce': self.web3.eth.get_transaction_count(account.address),
             'gas': estimated_gas,
-            'gasPrice': self.web3.to_wei('5', 'gwei'),
+            **gas_params,
         })
         if self.build_tx:
-            return txn
+            return {"tx": txn}
 
         signed = self.web3.eth.account.sign_transaction(txn, private_key)
         tx_hash = self.web3.eth.send_raw_transaction(signed.raw_transaction)
-        return self._format_tx(self.web3.to_hex(tx_hash))
+        return {"tx": self._format_tx(self.web3.to_hex(tx_hash))}
 
     def approve(self,  spender: str, amount: float,address:Optional[str] = None,  private_key: Optional[str] = None, conveted_amount: bool = True) -> str:
         
@@ -143,15 +154,14 @@ class ERC20Token:
             'gasPrice': self.web3.eth.gas_price,
         })
         if self.build_tx:
-            return txn
-        
+            return {"tx": txn}
 
         signed = self.web3.eth.account.sign_transaction(txn, key)
         tx_hash = self.web3.eth.send_raw_transaction(signed.raw_transaction)
         tx_receipt = self.web3.eth.wait_for_transaction_receipt(tx_hash)
         if tx_receipt.status != 1:
             raise ValueError(f"aaprove fail.\n {self._format_tx(self.web3.to_hex(tx_hash))}")
-        return f"{self._format_tx(self.web3.to_hex(tx_hash))}"
+        return {"tx": self._format_tx(self.web3.to_hex(tx_hash))}
     def transfer_from(self, private_key: str, from_addr: str, to: str, amount: float, decimals: int = None) -> str:
         self._ensure_contract()
         account = self.web3.eth.account.from_key(private_key)
@@ -179,12 +189,12 @@ class ERC20Token:
             'gasPrice': self.web3.to_wei('5', 'gwei'),
         })
         if self.build_tx:
-            return txn
+            return {"tx": txn}
 
         signed = self.web3.eth.account.sign_transaction(txn, private_key)
         tx_hash = self.web3.eth.send_raw_transaction(signed.raw_transaction)
-        return self._format_tx(self.web3.to_hex(tx_hash))
-    
+        return {"tx": self._format_tx(self.web3.to_hex(tx_hash))}
+
 
 class ERC20TokenMonitr():
     def __init__(self, wss_url, rpc_url = None, network_name = None, tokens:list = None, on_transfer_callback:callable=None,get_token_data = False, show_debug:bool=False, addresses:list = None, metadata:Dict[str, Any] = None):

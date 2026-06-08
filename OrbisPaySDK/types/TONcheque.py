@@ -73,24 +73,42 @@ class TONCheque:
             raise ValueError("Wallet not set. Provide mnemonics via set_params().")
 
     @staticmethod
-    def _generate_cheque_id(sender: str, recipient: str, amount: int) -> str:
-        """Generate unique cheque ID based on sender, recipient, amount, and timestamp."""
+    def _generate_cheque_id(sender: str, recipient: str, amount: int) -> int:
+        """
+        Generate a unique uint64 cheque ID matching the TON contract's chequeId: Int as uint64.
+        Uses a truncated hash of sender, recipient, amount, and timestamp.
+        """
         raw = f"{sender}:{recipient}:{amount}:{time.time()}".encode("utf-8")
-        return hashlib.sha256(raw).hexdigest()
+        h = hashlib.sha256(raw).digest()
+        return int.from_bytes(h[:8], "big") & 0x7FFFFFFFFFFFFFFF
+
+    @staticmethod
+    def _tact_opcode(message_name: str) -> int:
+        """
+        Compute the Tact message opcode: crc32(message_name) & 0x7FFFFFFF.
+        Tact auto-assigns opcodes to messages without explicit values using this formula.
+        """
+        import binascii
+        return binascii.crc32(message_name.encode()) & 0x7FFFFFFF
 
     async def init_cheque(
         self,
         amount: float,
-        recipient: str,
-        memo: Optional[str] = None,
+        recipients: List[str],
+        user_bps: int = 0,
+        ttl: int = 0,
+        cheque_id: Optional[int] = None,
     ) -> dict:
         """
-        Initialize a native TON cheque.
+        Initialize a native TON cheque (CreateNativeCheque Tact message).
+        Supports up to 10 recipients (contract limit).
 
         Args:
-            amount: Amount in TON.
-            recipient: Recipient TON address.
-            memo: Optional message.
+            amount:     Amount in TON (split equally among recipients).
+            recipients: List of recipient TON addresses (max 10).
+            user_bps:   Custom fee bps; 0 = contract default.
+            ttl:        Cheque lifetime in seconds; 0 = 30 days.
+            cheque_id:  uint64 cheque ID. Auto-generated if omitted.
 
         Returns:
             dict with cheque info and tx result.
@@ -98,17 +116,59 @@ class TONCheque:
         self._ensure_contract()
         self._ensure_wallet()
 
+        if not recipients:
+            raise ValueError("recipients must not be empty")
+        if len(recipients) > 10:
+            raise ValueError("max 10 recipients")
+
         sender = self.ton.get_address()
         nano_amount = to_nano(amount, "ton")
-        cheque_id = self._generate_cheque_id(sender, recipient, nano_amount)
+
+        if cheque_id is None:
+            cheque_id = self._generate_cheque_id(sender, recipients[0], nano_amount)
+
+        opcode = self._tact_opcode("CreateNativeCheque")
+        recipient_count = len(recipients)
+
+        # Build recipients map cell: map<Int as uint8, Address>
+        # Encoded as HashmapE with 8-bit keys
+        def _build_recipients_map(addrs: List[str]):
+            from pytoniq_core import Builder
+            # Build each entry: key=index(8bit), value=Address
+            # Use manual dict construction (HashmapE 8)
+            entries = []
+            for i, addr in enumerate(addrs):
+                key_bits = format(i, "08b")
+                val_cell = pbegin_cell().store_address(PAddress(addr)).end_cell()
+                entries.append((key_bits, val_cell))
+            # Build HashmapE
+            if not entries:
+                return None
+            # Simple single-level dict for up to 10 entries
+            from pytoniq_core.boc.cell import Cell as PCell
+            from pytoniq_core.boc.hashmap import HashMap
+            hm = HashMap(8)
+            for i, addr in enumerate(addrs):
+                hm.set(i.to_bytes(1, "big"), pbegin_cell().store_address(PAddress(addr)).end_cell())
+            return hm.serialize()
+
+        map_cell = _build_recipients_map(recipients)
 
         if self.ton.wallet_version == "wr5":
-            body = (
+            b = (
                 pbegin_cell()
-                .store_uint(0x01, 32)                    # op: init_cheque
-                .store_uint(0, 64)                        # query_id
-                .store_coins(nano_amount)                 # amount
-                .store_address(PAddress(recipient))       # recipient
+                .store_uint(opcode, 32)
+                .store_uint(cheque_id, 64)
+            )
+            if map_cell:
+                b = b.store_bit(1).store_ref(map_cell)
+            else:
+                b = b.store_bit(0)
+            body = (
+                b
+                .store_uint(recipient_count, 8)
+                .store_uint(user_bps, 32)
+                .store_uint(ttl, 32)
                 .end_cell()
             )
             if self.build_tx:
@@ -122,55 +182,46 @@ class TONCheque:
             return {
                 "cheque_id": cheque_id,
                 "amount": amount,
-                "recipient": recipient,
+                "recipients": recipients,
                 "sender": sender,
                 "tx_hash": tx_hash,
             }
 
         # Legacy wallets (v3r1, v3r2, v4r2)
         body = Cell()
-        body.bits.write_uint(0x01, 32)             # op: init_cheque
-        body.bits.write_uint(0, 64)                  # query_id
-        body.bits.write_grams(nano_amount)           # amount
-        body.bits.write_address(Address(recipient))  # recipient
+        body.bits.write_uint(opcode, 32)
+        body.bits.write_uint(cheque_id, 64)
+        if map_cell:
+            body.bits.write_bit(1)
+            import base64 as _b64
+            from pytoniq_core import Cell as PCell
+            body.refs.append(map_cell)
+        else:
+            body.bits.write_bit(0)
+        body.bits.write_uint(recipient_count, 8)
+        body.bits.write_uint(user_bps, 32)
+        body.bits.write_uint(ttl, 32)
 
         seqno = await self.ton.get_seqno()
-
         query = self.ton.wallet.create_transfer_message(
             to_addr=self.contract_address,
             amount=nano_amount,
             seqno=seqno,
             payload=body,
         )
-
         boc = bytes_to_b64str(query["message"].to_boc(False))
 
         if self.build_tx:
             return boc
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{self.api_url}/sendBoc",
-                json={"boc": boc},
-                headers=self.ton._get_headers(),
-            )
-            data = resp.json()
-            if data.get("ok"):
-                return {
-                    "cheque_id": cheque_id,
-                    "amount": amount,
-                    "recipient": recipient,
-                    "sender": sender,
-                    "result": data["result"],
-                }
-            raise ValueError(f"Init cheque failed: {data}")
+        return await self.ton.send_boc(boc)
 
-    async def claim_cheque(self, cheque_id: str) -> dict:
+    async def claim_cheque(self, cheque_id: int) -> dict:
         """
-        Claim (cash out) a native TON cheque.
+        Claim a native TON cheque (CashOutNativeCheque Tact message).
 
         Args:
-            cheque_id: The cheque identifier.
+            cheque_id (int): uint64 cheque identifier.
 
         Returns:
             dict with claim result.
@@ -178,12 +229,13 @@ class TONCheque:
         self._ensure_contract()
         self._ensure_wallet()
 
+        opcode = self._tact_opcode("CashOutNativeCheque")
+
         if self.ton.wallet_version == "wr5":
             body = (
                 pbegin_cell()
-                .store_uint(0x02, 32)                         # op: claim_cheque
-                .store_uint(0, 64)                             # query_id
-                .store_bytes(bytes.fromhex(cheque_id))         # cheque_id
+                .store_uint(opcode, 32)
+                .store_uint(cheque_id, 64)
                 .end_cell()
             )
             if self.build_tx:
@@ -194,48 +246,25 @@ class TONCheque:
                 amount=0.05,
                 body=body,
             )
-            return {
-                "cheque_id": cheque_id,
-                "status": "claimed",
-                "tx_hash": tx_hash,
-            }
+            return {"cheque_id": cheque_id, "status": "claimed", "tx_hash": tx_hash}
 
-        # Legacy wallets (v3r1, v3r2, v4r2)
         body = Cell()
-        body.bits.write_uint(0x02, 32)  # op: claim_cheque
-        body.bits.write_uint(0, 64)      # query_id
-        body.bits.write_bytes(bytes.fromhex(cheque_id))  # cheque_id
+        body.bits.write_uint(opcode, 32)
+        body.bits.write_uint(cheque_id, 64)
 
         seqno = await self.ton.get_seqno()
-
-        gas_amount = to_nano(0.05, "ton")
-
         query = self.ton.wallet.create_transfer_message(
             to_addr=self.contract_address,
-            amount=gas_amount,
+            amount=to_nano(0.05, "ton"),
             seqno=seqno,
             payload=body,
         )
-
         boc = bytes_to_b64str(query["message"].to_boc(False))
 
         if self.build_tx:
             return boc
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{self.api_url}/sendBoc",
-                json={"boc": boc},
-                headers=self.ton._get_headers(),
-            )
-            data = resp.json()
-            if data.get("ok"):
-                return {
-                    "cheque_id": cheque_id,
-                    "status": "claimed",
-                    "result": data["result"],
-                }
-            raise ValueError(f"Claim cheque failed: {data}")
+        return await self.ton.send_boc(boc)
 
     async def init_jetton_cheque(
         self,
@@ -243,6 +272,7 @@ class TONCheque:
         recipient: str,
         jetton_wallet_address: Optional[str] = None,
         token_master: Optional[str] = None,
+        cheque_id: Optional[int] = None,
     ) -> dict:
         """
         Initialize a Jetton (token) cheque.
@@ -255,6 +285,7 @@ class TONCheque:
             recipient: Recipient TON address.
             jetton_wallet_address: Sender's Jetton wallet address.
             token_master: Jetton master contract address. Auto-resolves sender's wallet.
+            cheque_id: uint64 cheque ID. Auto-generated if omitted.
 
         Returns:
             dict with cheque info and tx result.
@@ -272,14 +303,17 @@ class TONCheque:
             )
             if jetton_wallet_address is None:
                 raise ValueError(f"Could not resolve Jetton wallet for master {token_master}")
-        cheque_id = self._generate_cheque_id(sender, recipient, amount)
+        if cheque_id is None:
+            cheque_id = self._generate_cheque_id(sender, recipient, amount)
 
         if self.ton.wallet_version == "wr5":
             forward_body = (
                 pbegin_cell()
-                .store_uint(0x03, 32)                             # op: init_jetton_cheque
-                .store_uint(0, 64)                                 # query_id
+                .store_uint(0x01, 32)                             # op: create token cheque
+                .store_uint(cheque_id, 64)                         # chequeId (uint64)
                 .store_address(PAddress(recipient))                # recipient
+                .store_uint(0, 32)                                 # userBps = 0 (contract default)
+                .store_uint(0, 32)                                 # ttl = 0 (30 days default)
                 .end_cell()
             )
             body = (
@@ -314,9 +348,11 @@ class TONCheque:
 
         # Legacy wallets (v3r1, v3r2, v4r2)
         forward_body = Cell()
-        forward_body.bits.write_uint(0x03, 32)             # op: init_jetton_cheque
-        forward_body.bits.write_uint(0, 64)                  # query_id
+        forward_body.bits.write_uint(0x01, 32)             # op: create token cheque
+        forward_body.bits.write_uint(cheque_id, 64)         # chequeId (uint64)
         forward_body.bits.write_address(Address(recipient))  # recipient
+        forward_body.bits.write_uint(0, 32)                  # userBps
+        forward_body.bits.write_uint(0, 32)                  # ttl
 
         body = Cell()
         body.bits.write_uint(0x0F8A7EA5, 32)                      # op::transfer
@@ -362,12 +398,12 @@ class TONCheque:
                 }
             raise ValueError(f"Init jetton cheque failed: {data}")
 
-    async def claim_jetton_cheque(self, cheque_id: str) -> dict:
+    async def claim_jetton_cheque(self, cheque_id: int) -> dict:
         """
-        Claim a Jetton (token) cheque.
+        Claim a Jetton (token) cheque (CashOutTokenCheque Tact message).
 
         Args:
-            cheque_id: The cheque identifier.
+            cheque_id (int): uint64 cheque identifier.
 
         Returns:
             dict with claim result.
@@ -375,12 +411,13 @@ class TONCheque:
         self._ensure_contract()
         self._ensure_wallet()
 
+        opcode = self._tact_opcode("CashOutTokenCheque")
+
         if self.ton.wallet_version == "wr5":
             body = (
                 pbegin_cell()
-                .store_uint(0x04, 32)                         # op: claim_jetton_cheque
-                .store_uint(0, 64)                             # query_id
-                .store_bytes(bytes.fromhex(cheque_id))         # cheque_id
+                .store_uint(opcode, 32)
+                .store_uint(cheque_id, 64)
                 .end_cell()
             )
             if self.build_tx:
@@ -391,47 +428,25 @@ class TONCheque:
                 amount=0.05,
                 body=body,
             )
-            return {
-                "cheque_id": cheque_id,
-                "status": "claimed",
-                "tx_hash": tx_hash,
-            }
+            return {"cheque_id": cheque_id, "status": "claimed", "tx_hash": tx_hash}
 
-        # Legacy wallets (v3r1, v3r2, v4r2)
         body = Cell()
-        body.bits.write_uint(0x04, 32)  # op: claim_jetton_cheque
-        body.bits.write_uint(0, 64)      # query_id
-        body.bits.write_bytes(bytes.fromhex(cheque_id))
+        body.bits.write_uint(opcode, 32)
+        body.bits.write_uint(cheque_id, 64)
 
         seqno = await self.ton.get_seqno()
-        gas_amount = to_nano(0.05, "ton")
-
         query = self.ton.wallet.create_transfer_message(
             to_addr=self.contract_address,
-            amount=gas_amount,
+            amount=to_nano(0.05, "ton"),
             seqno=seqno,
             payload=body,
         )
-
         boc = bytes_to_b64str(query["message"].to_boc(False))
 
         if self.build_tx:
             return boc
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{self.api_url}/sendBoc",
-                json={"boc": boc},
-                headers=self.ton._get_headers(),
-            )
-            data = resp.json()
-            if data.get("ok"):
-                return {
-                    "cheque_id": cheque_id,
-                    "status": "claimed",
-                    "result": data["result"],
-                }
-            raise ValueError(f"Claim jetton cheque failed: {data}")
+        return await self.ton.send_boc(boc)
 
     async def get_contract_jetton_wallet(self, token_master: str) -> str:
         """
@@ -749,29 +764,121 @@ class TONCheque:
             "wallets": wallets["result"],
         }
 
-    async def get_cheque_info(self, cheque_id: str) -> dict:
+    async def get_native_cheque_info(self, cheque_id: int) -> dict:
         """
-        Get information about a cheque from the contract.
+        Get NativeChequeData from the contract getter `nativeCheque(id)`.
 
         Args:
-            cheque_id: The cheque identifier.
-
-        Returns:
-            dict with cheque data.
+            cheque_id (int): uint64 cheque identifier.
         """
         self._ensure_contract()
-
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{self.api_url}/runGetMethod",
                 json={
                     "address": self.contract_address,
-                    "method": "get_cheque_info",
-                    "stack": [["num", "0x" + cheque_id]],
+                    "method": "nativeCheque",
+                    "stack": [["num", cheque_id]],
                 },
                 headers=self.ton._get_headers(),
             )
             data = resp.json()
             if data.get("ok"):
                 return data["result"]
-            raise ValueError(f"Failed to get cheque info: {data}")
+            raise ValueError(f"Failed to get native cheque info: {data}")
+
+    async def get_token_cheque_info(self, cheque_id: int) -> dict:
+        """
+        Get TokenChequeData from the contract getter `tokenCheque(id)`.
+        """
+        self._ensure_contract()
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{self.api_url}/runGetMethod",
+                json={
+                    "address": self.contract_address,
+                    "method": "tokenCheque",
+                    "stack": [["num", cheque_id]],
+                },
+                headers=self.ton._get_headers(),
+            )
+            data = resp.json()
+            if data.get("ok"):
+                return data["result"]
+            raise ValueError(f"Failed to get token cheque info: {data}")
+
+    async def is_claimed(self, cheque_id: int, address: str) -> bool:
+        """
+        Check if a specific address has claimed their share from a native cheque.
+        Calls `isClaimed(chequeId, addr)` getter.
+        """
+        self._ensure_contract()
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{self.api_url}/runGetMethod",
+                json={
+                    "address": self.contract_address,
+                    "method": "isClaimed",
+                    "stack": [["num", cheque_id], ["tvm.Slice", address]],
+                },
+                headers=self.ton._get_headers(),
+            )
+            data = resp.json()
+            if data.get("ok"):
+                stack = data["result"].get("stack", [])
+                return bool(int(stack[0][1], 16)) if stack else False
+            raise ValueError(f"Failed to check claim status: {data}")
+
+    async def refund_expired_cheque(self, cheque_id: int, cheque_type: int) -> dict:
+        """
+        Refund an expired cheque back to the creator/spender.
+        Sends RefundExpiredCheque Tact message to the contract.
+
+        Args:
+            cheque_id   (int): uint64 cheque identifier.
+            cheque_type (int): 0 = native, 1 = token, 2 = swap.
+
+        Returns:
+            dict with tx result.
+        """
+        self._ensure_contract()
+        self._ensure_wallet()
+
+        opcode = self._tact_opcode("RefundExpiredCheque")
+
+        if self.ton.wallet_version == "wr5":
+            body = (
+                pbegin_cell()
+                .store_uint(opcode, 32)
+                .store_uint(cheque_id, 64)
+                .store_uint(cheque_type, 8)
+                .end_cell()
+            )
+            if self.build_tx:
+                import base64 as _b64
+                return _b64.b64encode(body.to_boc()).decode()
+            tx_hash = await self.ton._v5_wallet.transfer(
+                destination=self.contract_address,
+                amount=0.05,
+                body=body,
+            )
+            return {"cheque_id": cheque_id, "cheque_type": cheque_type, "tx_hash": tx_hash}
+
+        body = Cell()
+        body.bits.write_uint(opcode, 32)
+        body.bits.write_uint(cheque_id, 64)
+        body.bits.write_uint(cheque_type, 8)
+
+        seqno = await self.ton.get_seqno()
+        query = self.ton.wallet.create_transfer_message(
+            to_addr=self.contract_address,
+            amount=to_nano(0.05, "ton"),
+            seqno=seqno,
+            payload=body,
+        )
+        boc = bytes_to_b64str(query["message"].to_boc(False))
+
+        if self.build_tx:
+            return boc
+
+        return await self.ton.send_boc(boc)

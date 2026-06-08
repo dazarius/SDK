@@ -308,12 +308,12 @@ class TRX:
         )
 
         if self.build_tx:
-            return txn
+            return {"tx": txn}
 
         result = txn.broadcast()
 
         return {
-            "tx_hash": result.get("txid", ""),
+            "tx": result.get("txid", ""),
             "status": "success" if result.get("result", False) else "failed",
             "amount": amount,
             "to": to,
@@ -362,12 +362,12 @@ class TRX:
         )
 
         if self.build_tx:
-            return txn
+            return {"tx": txn}
 
         result = txn.broadcast()
 
         return {
-            "tx_hash": result.get("txid", ""),
+            "tx": result.get("txid", ""),
             "status": "success" if result.get("result", False) else "failed",
             "amount": amount,
             "to": to,
@@ -462,7 +462,7 @@ class TRX:
         result = txn.broadcast()
 
         return {
-            "tx_hash": result.get("txid", ""),
+            "tx": result.get("txid", ""),
             "status": "success" if result.get("result", False) else "failed",
             "spender": spender,
             "amount": amount,
@@ -528,6 +528,270 @@ class TRX:
         if not address:
             address = self.get_address()
         return self.client.get_account_resource(address)
+
+    # ── Receipt / parsing ─────────────────────────────────────────────────────
+
+    def parse_receipt_gas(self, tx_id: str) -> dict:
+        """
+        Extracts energy, bandwidth, and fee breakdown for a confirmed transaction.
+
+        TRON fee structure:
+          fee = energy_fee + net_fee
+          energy  ≈ EVM gas_used   (compute cost, charged in TRX if no frozen energy)
+          net     ≈ tx byte size   (bandwidth, free up to daily limit)
+
+        Args:
+            tx_id (str): Transaction ID / hash string.
+
+        Returns:
+            dict: {
+                "fee_sun":         int,    # total fee in sun   (≈ EVM fee_wei / SOL fee_lamports)
+                "fee_trx":         float,  # total fee in TRX   (≈ EVM fee_eth  / SOL fee_sol)
+                "energy_usage":    int,    # energy consumed    (≈ EVM gas_used)
+                "energy_fee_sun":  int,    # TRX cost for energy in sun
+                "energy_fee_trx":  float,
+                "net_usage":       int,    # bandwidth bytes consumed
+                "net_fee_sun":     int,    # TRX cost for bandwidth in sun
+                "net_fee_trx":     float,
+                "block_number":    int,    # (≈ EVM block_number / SOL slot)
+                "status":          str,    # "SUCCESS" or error code
+            }
+        """
+        info    = self.client.get_transaction_info(tx_id)
+        receipt = info.get("receipt", {})
+
+        fee_sun        = int(info.get("fee", 0) or 0)
+        energy_usage   = int(receipt.get("energy_usage_total") or receipt.get("energy_usage") or 0)
+        energy_fee_sun = int(receipt.get("energy_fee", 0) or 0)
+        net_usage      = int(receipt.get("net_usage", 0) or 0)
+        net_fee_sun    = int(receipt.get("net_fee", 0) or 0)
+
+        return {
+            "fee_sun":        fee_sun,
+            "fee_trx":        fee_sun        / SUN_PER_TRX,
+            "energy_usage":   energy_usage,
+            "energy_fee_sun": energy_fee_sun,
+            "energy_fee_trx": energy_fee_sun / SUN_PER_TRX,
+            "net_usage":      net_usage,
+            "net_fee_sun":    net_fee_sun,
+            "net_fee_trx":    net_fee_sun    / SUN_PER_TRX,
+            "block_number":   info.get("blockNumber"),
+            "status":         receipt.get("result", "SUCCESS"),
+        }
+
+    def tx_to_human_view(self, tx_id: str) -> dict:
+        """
+        Converts a transaction ID into a human-readable summary dict.
+        Fetches both raw transaction and receipt info.
+
+        Args:
+            tx_id (str): Transaction ID / hash string.
+
+        Returns:
+            dict: {
+                "action":           str,         # "TRX Transfer" | "TRC20 Transfer" | "TRC20 Approve" | ...
+                "from":             str | None,
+                "to":               str | None,
+                "amount":           float,       # human units (TRX or raw token amount)
+                "symbol":           str,         # "TRX" or "TRC20@<contract[:8]>…"
+                "contract_address": str | None,
+                "fee_trx":          float,
+                "block_number":     int | None,
+                "status":           str,
+                "summary":          str,
+            }
+        """
+        tx      = self.client.get_transaction(tx_id)
+        info    = self.client.get_transaction_info(tx_id)
+        receipt = info.get("receipt", {})
+
+        fee_sun  = int(info.get("fee", 0) or 0)
+        status   = receipt.get("result", "SUCCESS")
+        raw_data = tx.get("raw_data", {})
+        contracts = raw_data.get("contract", [])
+
+        result: Dict[str, Any] = {
+            "action":           "Unknown",
+            "from":             None,
+            "to":               None,
+            "amount":           0.0,
+            "symbol":           "TRX",
+            "contract_address": None,
+            "fee_trx":          fee_sun / SUN_PER_TRX,
+            "block_number":     info.get("blockNumber"),
+            "status":           status,
+            "summary":          "",
+        }
+
+        if not contracts:
+            return result
+
+        ctype = contracts[0].get("type", "")
+        value = contracts[0].get("parameter", {}).get("value", {})
+
+        def _addr(raw) -> Optional[str]:
+            if not raw:
+                return None
+            s = raw if isinstance(raw, str) else raw.hex()
+            if len(s) == 42 and s.startswith("41"):
+                try:
+                    from tronpy.keys import to_base58check_address
+                    return to_base58check_address(bytes.fromhex(s))
+                except Exception:
+                    pass
+            return s
+
+        SELECTORS = {
+            "a9059cbb": "TRC20 Transfer",
+            "095ea7b3": "TRC20 Approve",
+            "23b872dd": "TRC20 TransferFrom",
+        }
+
+        if ctype == "TransferContract":
+            result["action"] = "TRX Transfer"
+            result["from"]   = _addr(value.get("owner_address"))
+            result["to"]     = _addr(value.get("to_address"))
+            result["amount"] = int(value.get("amount", 0)) / SUN_PER_TRX
+            result["symbol"] = "TRX"
+
+        elif ctype == "TriggerSmartContract":
+            ca = _addr(value.get("contract_address"))
+            result["contract_address"] = ca
+            result["from"] = _addr(value.get("owner_address"))
+            data     = value.get("data", "")
+            selector = data[:8].lower() if len(data) >= 8 else ""
+            result["action"] = SELECTORS.get(selector, "Contract Call")
+
+            if selector == "a9059cbb" and len(data) >= 136:
+                result["to"]     = _addr("41" + data[32:72])
+                result["amount"] = int(data[72:136], 16)
+                result["symbol"] = f"TRC20@{(ca or '')[:8]}…"
+
+        elif ctype == "TransferAssetContract":
+            result["action"] = "TRC10 Transfer"
+            result["from"]   = _addr(value.get("owner_address"))
+            result["to"]     = _addr(value.get("to_address"))
+            result["amount"] = int(value.get("amount", 0))
+            result["symbol"] = value.get("asset_name", "TRC10")
+
+        result["summary"] = (
+            f"{result['action']} {result['amount']} {result['symbol']} "
+            f"from {(result['from'] or '')[:8]}… → {(result['to'] or '')[:8]}… | "
+            f"status: {status} | fee: {result['fee_trx']:.6f} TRX"
+        )
+        return result
+
+    def parse_raw_tx(self, tx) -> dict:
+        """
+        Parses a raw tronpy transaction locally — no network call.
+        Accepts a tronpy Transaction object (from build_tx=True) or a raw dict.
+
+        Args:
+            tx: tronpy Transaction object or dict with 'raw_data' key.
+
+        Returns:
+            dict: {
+                "tx_id":             str | None,
+                "tx_type":           str,         # "TRX Transfer" | "TRC20 Transfer" | "Contract Call" | ...
+                "from":              str | None,
+                "to":                str | None,
+                "amount_sun":        int,
+                "amount_trx":        float,
+                "contract_type":     str,
+                "contract_address":  str | None,
+                "function_selector": str | None,  # decoded name or raw 4-byte hex
+                "data_hex":          str | None,
+                "expiration":        int | None,
+                "fee_limit_sun":     int,
+            }
+        """
+        if hasattr(tx, "raw_data"):
+            raw_data = tx.raw_data
+            tx_id    = getattr(tx, "txid", None)
+        elif isinstance(tx, dict):
+            raw_data = tx.get("raw_data", {})
+            tx_id    = tx.get("txID")
+        else:
+            raise ValueError(f"Unsupported tx type: {type(tx)}")
+
+        contracts  = raw_data.get("contract", [])
+        fee_limit  = int(raw_data.get("fee_limit", 0) or 0)
+        expiration = raw_data.get("expiration")
+
+        result: Dict[str, Any] = {
+            "tx_id":             tx_id,
+            "tx_type":           "Unknown",
+            "from":              None,
+            "to":                None,
+            "amount_sun":        0,
+            "amount_trx":        0.0,
+            "contract_type":     "",
+            "contract_address":  None,
+            "function_selector": None,
+            "data_hex":          None,
+            "expiration":        expiration,
+            "fee_limit_sun":     fee_limit,
+        }
+
+        if not contracts:
+            return result
+
+        ctype = contracts[0].get("type", "")
+        value = contracts[0].get("parameter", {}).get("value", {})
+        result["contract_type"] = ctype
+
+        def _addr(raw) -> Optional[str]:
+            if not raw:
+                return None
+            s = raw if isinstance(raw, str) else raw.hex()
+            if len(s) == 42 and s.startswith("41"):
+                try:
+                    from tronpy.keys import to_base58check_address
+                    return to_base58check_address(bytes.fromhex(s))
+                except Exception:
+                    pass
+            return s
+
+        SELECTORS = {
+            "a9059cbb": "transfer(address,uint256)",
+            "095ea7b3": "approve(address,uint256)",
+            "23b872dd": "transferFrom(address,address,uint256)",
+            "70a08231": "balanceOf(address)",
+            "dd62ed3e": "allowance(address,address)",
+        }
+
+        if ctype == "TransferContract":
+            result["tx_type"]    = "TRX Transfer"
+            result["from"]       = _addr(value.get("owner_address"))
+            result["to"]         = _addr(value.get("to_address"))
+            result["amount_sun"] = int(value.get("amount", 0))
+            result["amount_trx"] = result["amount_sun"] / SUN_PER_TRX
+
+        elif ctype == "TriggerSmartContract":
+            result["contract_address"] = _addr(value.get("contract_address"))
+            result["from"] = _addr(value.get("owner_address"))
+            data     = value.get("data", "")
+            selector = data[:8].lower() if len(data) >= 8 else ""
+            result["data_hex"]          = data
+            result["function_selector"] = SELECTORS.get(selector, selector or None)
+
+            if selector == "a9059cbb":
+                result["tx_type"] = "TRC20 Transfer"
+                if len(data) >= 136:
+                    result["to"]         = _addr("41" + data[32:72])
+                    result["amount_sun"] = int(data[72:136], 16)
+            elif selector == "095ea7b3":
+                result["tx_type"] = "TRC20 Approve"
+            else:
+                result["tx_type"] = "Contract Call"
+
+        elif ctype == "TransferAssetContract":
+            result["tx_type"]    = "TRC10 Transfer"
+            result["from"]       = _addr(value.get("owner_address"))
+            result["to"]         = _addr(value.get("to_address"))
+            result["amount_sun"] = int(value.get("amount", 0))
+
+        return result
 
     def _resolve_key(self, private_key: Optional[str] = None) -> PrivateKey:
         """

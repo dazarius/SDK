@@ -74,6 +74,7 @@ class BTCCheque:
         amount: float,
         recipient: str,
         memo: Optional[str] = None,
+        cheque_id: Optional[str] = None,
     ) -> dict:
         """
         Initialize a BTC cheque.
@@ -85,6 +86,7 @@ class BTCCheque:
             amount: Amount in BTC.
             recipient: Intended recipient Bitcoin address.
             memo: Optional memo (stored in OP_RETURN, max 80 bytes).
+            cheque_id: Custom cheque identifier. Auto-generated if omitted.
 
         Returns:
             dict with cheque_id, escrow_key (WIF), escrow_address, and tx_hash.
@@ -101,7 +103,8 @@ class BTCCheque:
         sender_address = self.btc.get_address()
         amount_satoshi = int(amount * SATOSHI_PER_BTC)
 
-        cheque_id = self._generate_cheque_id(sender_address, recipient, amount_satoshi)
+        if cheque_id is None:
+            cheque_id = self._generate_cheque_id(sender_address, recipient, amount_satoshi)
 
         # Build OP_RETURN data: cheque metadata
         op_return_data = f"ORBIS:{cheque_id[:16]}:{recipient[:16]}"

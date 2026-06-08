@@ -379,7 +379,11 @@ class TON:
                 params={"address": address},
                 headers=self._get_headers(),
             )
-            data = resp.json()
+            try:
+                data = resp.json()
+            except Exception:
+                raise ValueError(f"TonCenter returned non-JSON (status {resp.status_code}). "
+                                 f"Check api_key or rate limits. Body: {resp.text[:200]}")
             if data.get("ok"):
                 return data["result"]
             raise ValueError(f"Failed to get wallet info: {data}")
@@ -436,6 +440,10 @@ class TON:
             return addr.to_string(is_user_friendly=True, is_url_safe=True, is_bounceable=bounceable)
         except Exception as e:
             raise ValueError(f"Invalid TON address '{address}': {e}")
+
+    def _normalize_address(self, address: str, bounceable: bool = True) -> str:
+        """Instance alias for the static normalize_address."""
+        return TON.normalize_address(address, bounceable)
 
     async def get_recipient_wallet_type(self, address: str) -> dict:
         """
@@ -514,16 +522,16 @@ class TON:
                         .store_snake_string(memo)
                         .end_cell()
                     )
-                    return _b64.b64encode(body_cell.to_boc()).decode()
-                return None
+                    return {"tx": _b64.b64encode(body_cell.to_boc()).decode()}
+                return {"tx": None}
             tx_hash = await self._v5_wallet.transfer(
                 destination=to,
                 amount=amount,
                 body=memo,
             )
             return {
+                "tx": tx_hash,
                 "status": "sent",
-                "tx_hash": tx_hash,
                 "amount": amount,
                 "to": to,
             }
@@ -545,7 +553,7 @@ class TON:
         boc = bytes_to_b64str(boc_bytes)
 
         if self.build_tx:
-            return boc
+            return {"tx": boc}
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -564,8 +572,8 @@ class TON:
             if txs:
                 tx_hash = txs[0].get("transaction_id", {}).get("hash")
                 if tx_hash:
-                    return tx_hash
-        return None
+                    return {"tx": tx_hash}
+        return {"tx": None}
 
     def _build_jetton_transfer_body(
         self,
@@ -693,15 +701,15 @@ class TON:
             )
             if self.build_tx:
                 import base64 as _b64
-                return _b64.b64encode(body.to_boc()).decode()
+                return {"tx": _b64.b64encode(body.to_boc()).decode()}
             tx_hash = await self._v5_wallet.transfer(
                 destination=jetton_wallet_address,
                 amount=gas_amount,
                 body=body,
             )
             return {
+                "tx": tx_hash,
                 "status": "sent",
-                "tx_hash": tx_hash,
                 "jetton_amount": amount,
                 "to": to,
             }
@@ -729,7 +737,7 @@ class TON:
         boc = bytes_to_b64str(query["message"].to_boc(False))
 
         if self.build_tx:
-            return boc
+            return {"tx": boc}
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -740,8 +748,8 @@ class TON:
             data = resp.json()
             if data.get("ok"):
                 return {
+                    "tx": data["result"],
                     "status": "sent",
-                    "result": data["result"],
                     "jetton_amount": amount,
                     "to": to,
                 }
@@ -792,6 +800,117 @@ class TON:
         except Exception as e:
             raise ValueError(f"address decode failed (stack[0]={item}): {e}")
 
+    async def send_ton_connect_tx(self, tx: dict) -> str:
+        """
+        Signs and broadcasts a TON Connect 2.0 sendTransaction payload.
+
+        Args:
+            tx (dict): {
+                'from':        str,            # sender address (ignored, uses active wallet)
+                'network':     str,            # '-239' mainnet / '-3' testnet
+                'valid_until': int,            # unix expiry timestamp
+                'messages': [{
+                    'address': str,            # destination
+                    'amount':  str,            # nanoTON (already in nano, no conversion)
+                    'payload': str | None,     # base64 BoC body cell (optional)
+                    'stateInit': str | None,   # base64 BoC stateInit (optional)
+                }]
+            }
+
+        Returns:
+            str: Transaction hash hex string.
+        """
+        messages = tx.get("messages", [])
+        if not messages:
+            raise ValueError("TON Connect tx has no messages")
+
+        def _parse_payload_pcell(b64: str | None):
+            """Parse BoC → pytoniq_core Cell (for wr5 / tonutils path)."""
+            if not b64:
+                return None
+            return PCell.one_from_boc(base64.b64decode(b64))
+
+        def _parse_payload_tonsdk(b64: str | None):
+            """Parse BoC → tonsdk-compatible Cell (for legacy wallets).
+            Converts PCell tree recursively to tonsdk Cell.
+            """
+            if not b64:
+                return None
+            pcell = PCell.one_from_boc(base64.b64decode(b64))
+
+            def _convert(pc) -> Cell:
+                tc = Cell()
+                # copy bit data as raw bytes
+                data = bytes(pc.data) if hasattr(pc, 'data') else b''
+                if data:
+                    tc.bits.write_bytes(data)
+                for ref in (pc.refs if hasattr(pc, 'refs') else []):
+                    tc.refs.append(_convert(ref))
+                return tc
+
+            try:
+                return _convert(pcell)
+            except Exception:
+                return None  # drop payload on conversion failure
+
+        # ── WalletV5R1 (wr5) — uses pytoniq_core PCell ───────────
+        if self.wallet_version == "wr5":
+            from tonutils.contracts.wallet import WalletMessage
+
+            wallet_messages = []
+            for m in messages:
+                body = _parse_payload_pcell(m.get("payload"))
+                wallet_messages.append(
+                    WalletMessage(
+                        destination=m["address"],
+                        amount=int(m["amount"]),
+                        body=body,
+                    )
+                )
+
+            if len(wallet_messages) == 1:
+                ext_msg = self._v5_wallet.transfer_message(
+                    destination=messages[0]["address"],
+                    amount=int(messages[0]["amount"]),
+                    body=_parse_payload_pcell(messages[0].get("payload")),
+                )
+            else:
+                ext_msg = self._v5_wallet.batch_transfer_message(wallet_messages)
+
+            boc = base64.b64encode(bytes(ext_msg.serialize())).decode()
+            return await self.send_boc(boc)
+
+        # ── Legacy tonsdk (v3r1, v3r2, v4r2) — uses tonsdk Cell ──
+        seqno = await self.get_seqno()
+
+        if len(messages) == 1:
+            m = messages[0]
+            to     = self._normalize_address(m["address"])
+            amount = int(m["amount"])
+            body   = _parse_payload_tonsdk(m.get("payload"))
+            query  = self.wallet.create_transfer_message(
+                to_addr=to, amount=amount, seqno=seqno, payload=body
+            )
+            boc_bytes = query["message"].to_boc(False)
+            boc = bytes_to_b64str(boc_bytes)
+        else:
+            last_hash = None
+            for m in messages:
+                to     = self._normalize_address(m["address"])
+                amount = int(m["amount"])
+                body   = _parse_payload_tonsdk(m.get("payload"))
+                cur_seqno = await self.get_seqno()
+                query = self.wallet.create_transfer_message(
+                    to_addr=to, amount=amount, seqno=cur_seqno, payload=body
+                )
+                boc_bytes = query["message"].to_boc(False)
+                boc = bytes_to_b64str(boc_bytes)
+                last_hash = await self.send_boc(boc)  # returns hex hash
+                await asyncio.sleep(3)
+            return last_hash or ""
+
+        return await self.send_boc(boc)
+
     async def send_boc(self, boc: str) -> dict:
         """
         Broadcasts a pre-built and signed BOC directly to TonCenter.
@@ -818,7 +937,7 @@ class TON:
             data = resp.json()
             if not data.get("ok"):
                 raise ValueError(f"sendBoc failed: {data}")
-            return msg_hash
+            return {"tx": msg_hash}
 
     async def get_transactions(
         self, address: Optional[str] = None, limit: int = 10
@@ -1414,6 +1533,106 @@ class TON:
                 return self.parse_transaction(tx)
         return None
 
+    def parse_raw_tx(self, tx: dict) -> dict:
+        """
+        Parses a TON Connect 2.0 sendTransaction payload locally — no network call.
+        Decodes payload BOC cells for each message: opcode, jetton fields, comment.
+
+        Args:
+            tx (dict): {
+                'from':        str,         # sender address
+                'network':     str,         # '-239' mainnet / '-3' testnet
+                'valid_until': int,         # unix expiry timestamp
+                'messages': [{
+                    'address':   str,       # destination
+                    'amount':    str,       # nanoTON
+                    'payload':   str | None,  # base64 BOC body cell
+                    'stateInit': str | None,  # base64 BOC stateInit
+                }]
+            }
+
+        Returns:
+            dict: {
+                'sender':          str,
+                'network':         'mainnet' | 'testnet',
+                'valid_until':     int,
+                'valid_until_utc': str,
+                'num_messages':    int,
+                'total_ton_nano':  int,
+                'total_ton':       float,
+                'tx_type':         str,  # 'native_transfer' | 'jetton_transfer' | 'contract_call' | 'mixed'
+                'messages': list[{
+                    'destination':    str,
+                    'amount_nano':    int,
+                    'amount_ton':     float,
+                    'op':             str | None,   # hex opcode
+                    'op_name':        str | None,
+                    'comment':        str | None,
+                    'jetton':         dict | None,
+                    'has_state_init': bool,
+                }],
+            }
+        """
+        network_raw = str(tx.get("network", "-239"))
+        network = "mainnet" if network_raw == "-239" else "testnet"
+        valid_until = tx.get("valid_until", 0)
+
+        parsed_msgs = []
+        for m in tx.get("messages", []):
+            amount_nano = int(m.get("amount", 0))
+            payload_b64 = m.get("payload")
+
+            msg_data = (
+                {"@type": "msg.dataRaw", "body": payload_b64}
+                if payload_b64 else None
+            )
+
+            op_int   = self._decode_body_op(msg_data)
+            comment  = self._decode_comment(msg_data) if (op_int is None or op_int == 0) else None
+            jetton   = self._parse_jetton_body(msg_data)
+            op_name  = self._JETTON_OPCODES.get(op_int) if op_int else None
+
+            parsed_msgs.append({
+                "destination":    m.get("address", ""),
+                "amount_nano":    amount_nano,
+                "amount_ton":     amount_nano / NANOTON,
+                "op":             hex(op_int) if op_int is not None else None,
+                "op_name":        op_name,
+                "comment":        comment,
+                "jetton":         jetton,
+                "has_state_init": bool(m.get("stateInit")),
+            })
+
+        total_nano = sum(m["amount_nano"] for m in parsed_msgs)
+
+        # detect overall tx type
+        ops = {m["op_name"] for m in parsed_msgs if m["op_name"]}
+        has_contract = any(m["op"] and m["op"] != "0x0" for m in parsed_msgs if not m["op_name"])
+        if len(parsed_msgs) > 1:
+            categories = {m["op_name"] or ("native" if not m["op"] else "contract") for m in parsed_msgs}
+            tx_type = "mixed" if len(categories) > 1 else next(iter(categories), "multi_message")
+        elif ops:
+            tx_type = next(iter(ops))
+        elif has_contract:
+            tx_type = "contract_call"
+        else:
+            tx_type = "native_transfer"
+
+        return {
+            "sender":          tx.get("from", ""),
+            "network":         network,
+            "valid_until":     valid_until,
+            "valid_until_utc": (
+                datetime.fromtimestamp(valid_until, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                if valid_until else None
+            ),
+            "num_messages":    len(parsed_msgs),
+            "total_ton_nano":  total_nano,
+            "total_ton":       total_nano / NANOTON,
+            "tx_type":         tx_type,
+            "messages":        parsed_msgs,
+        }
+
     async def parse_tx_by_hash(
         self,
         tx_hash: str,
@@ -1445,12 +1664,134 @@ class TON:
         else:
             tx_hash_b64 = tx_hash
 
+        # First try exact hash match (works if TonCenter uses same hash format)
         for attempt in range(retries):
-            raw_txs = await self.get_transactions(address=address, limit=50)
+            raw_txs = await self.get_transactions(address=address, limit=20)
             for tx in raw_txs:
                 tid = tx.get("transaction_id", {})
-                if tid.get("hash") == tx_hash_b64:
+                if tid.get("hash") in (tx_hash_b64, tx_hash):
                     return await self.parse_transaction(tx)
             if attempt < retries - 1:
                 await asyncio.sleep(retry_delay)
+
+        # Fallback: external msg hash ≠ internal tx hash in TON.
+        # Return the most recent transaction for this address.
+        try:
+            raw_txs = await self.get_transactions(address=address, limit=5)
+            if raw_txs:
+                return await self.parse_transaction(raw_txs[0])
+        except Exception:
+            pass
         return None
+
+    async def parse_receipt_gas(
+        self,
+        tx_hash: str = None,
+        raw_tx: dict = None,
+        address: str = None,
+        latest: bool = False,
+    ) -> dict:
+        """
+        Extracts fee breakdown for a TON transaction.
+
+        ⚠️  TON has TWO different hashes — do not confuse them:
+            msg_hash  — hash of the BOC cell returned by send_boc().
+                        This is NOT stored in transaction_id.hash on TonCenter.
+            tx_hash   — hash of the transaction itself, from transaction_id.hash
+                        in getTransactions response (Base64 or hex).
+
+        TON fee structure:
+          fee  =  storage_fee  +  other_fee
+          other_fee ≈ execution cost (closest to EVM gas_used * gas_price)
+          storage_fee = on-chain cell storage rent
+
+        Args:
+            tx_hash (str):   TonCenter transaction hash — Base64 or hex (64 chars).
+                             ⚠️ Do NOT pass the msg_hash from send_boc() here.
+            raw_tx  (dict):  Already-fetched raw TonCenter transaction dict.
+                             Preferred path — avoids hash confusion entirely.
+            address (str):   Sender address to search in. Defaults to active wallet.
+            latest  (bool):  If True, skips hash lookup and returns fees for the
+                             most recent OUTGOING transaction (largest fee).
+                             Use this right after send_boc() when you don't have
+                             the transaction hash yet.
+
+        Returns:
+            dict: {
+                "fee_nano":          int,    # total fee in nanotons  (≈ EVM fee_wei / SOL fee_lamports)
+                "fee_ton":           float,  # total fee in TON       (≈ EVM fee_eth  / SOL fee_sol)
+                "storage_fee_nano":  int,    # storage phase cost
+                "storage_fee_ton":   float,
+                "other_fee_nano":    int,    # execution + action phase cost (≈ EVM gas cost)
+                "other_fee_ton":     float,
+                "lt":                str,    # logical time           (≈ EVM block_number / SOL slot)
+                "timestamp":         int,    # unix timestamp
+                "status":            str,    # "success"
+            }
+
+        Raises:
+            ValueError: If no input provided or the transaction is not found.
+        """
+        if raw_tx is None:
+            if not address:
+                address = self.get_address()
+
+            raw_txs = await self.get_transactions(address=address, limit=50)
+
+            if latest:
+                # Outgoing tx has an empty in_msg.source (triggered by external message)
+                # and the highest fee among recent transactions.
+                outgoing = [
+                    t for t in raw_txs
+                    if not (t.get("in_msg") or {}).get("source")
+                ]
+                raw_tx = outgoing[0] if outgoing else (raw_txs[0] if raw_txs else None)
+                if raw_tx is None:
+                    raise ValueError("No transactions found for address")
+
+            elif tx_hash:
+                if all(c in "0123456789abcdefABCDEF" for c in tx_hash) and len(tx_hash) == 64:
+                    tx_hash_b64 = base64.b64encode(bytes.fromhex(tx_hash)).decode()
+                else:
+                    tx_hash_b64 = tx_hash
+
+                raw_tx = next(
+                    (t for t in raw_txs if t.get("transaction_id", {}).get("hash") == tx_hash_b64),
+                    None,
+                )
+                if raw_tx is None:
+                    raise ValueError(
+                        f"Transaction {tx_hash} not found. "
+                        "Note: msg_hash from send_boc() ≠ transaction_id.hash. "
+                        "Use latest=True or pass raw_tx directly."
+                    )
+            else:
+                raise ValueError("Provide tx_hash, raw_tx, or set latest=True")
+
+        tx_id       = raw_tx.get("transaction_id", {})
+        total_fee   = int(raw_tx.get("fee", 0) or 0)
+        storage_fee = int(raw_tx.get("storage_fee", 0) or 0)
+        other_fee   = int(raw_tx.get("other_fee", 0) or 0)
+        utime       = raw_tx.get("utime", 0)
+
+        return {
+            "fee":               total_fee,
+            "fee_ton":           total_fee   / NANOTON,
+            "storage_fee_nano":  storage_fee,
+            "storage_fee_ton":   storage_fee / NANOTON,
+            "other_fee_nano":    other_fee,
+            "other_fee_ton":     other_fee   / NANOTON,
+            "lt":                tx_id.get("lt", ""),
+            "timestamp":         utime,
+            "status":            "success",
+        }
+
+
+async def main():
+    ton = TON()
+    data = await ton.parse_receipt_gas(latest=True, address="EQCzYN15-IOT0LeXIM9Sc2TXmck3BNBr43_PaSiD3GAhCfAi")
+    return data
+
+if __name__ == "__main__":
+    import asyncio
+    print(asyncio.run(main()))

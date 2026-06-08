@@ -133,6 +133,10 @@ class SOLCheque:
         """Returns (Pubkey, bump) for a TokenCheque PDA (seeds: ['token_cheque', cheque_id])."""
         return Pubkey.find_program_address([b"token_cheque", _cid(cheque_id)], self.PROGRAM_ID)
 
+    def multi_cheque_pda(self, cheque_id):
+        """Returns (Pubkey, bump) for a MultiCheque PDA (seeds: ['multi_cheque', cheque_id])."""
+        return Pubkey.find_program_address([b"multi_cheque", _cid(cheque_id)], self.PROGRAM_ID)
+
     def swap_cheque_pda(self, cheque_id):
         """Returns (Pubkey, bump) for a SwapCheque PDA (seeds: ['swap_cheque', cheque_id])."""
         return Pubkey.find_program_address([b"swap_cheque", _cid(cheque_id)], self.PROGRAM_ID)
@@ -148,7 +152,6 @@ class SOLCheque:
                 "pda":            str,
                 "owner":          str,
                 "treasury":       str,
-                "bps":            int,   # default fee in basis points
                 "collected_fees": int,   # accumulated SOL fees in lamports
                 "is_active":      bool,
                 "bump":           int,
@@ -159,37 +162,60 @@ class SOLCheque:
         if resp.value is None:
             return None
         raw = bytes(resp.value.data)[8:]  # skip 8-byte Anchor discriminator
+        # Config layout (after discriminator): owner(32) | treasury(32) | collected_fees(u64) | is_active(bool) | bump(u8)
         return {
             "pda":            str(config_pda),
             "owner":          str(Pubkey.from_bytes(raw[0:32])),
             "treasury":       str(Pubkey.from_bytes(raw[32:64])),
-            "bps":            struct.unpack_from("<Q", raw, 64)[0],
-            "collected_fees": struct.unpack_from("<Q", raw, 72)[0],
-            "is_active":      bool(raw[80]),
-            "bump":           raw[81],
+            "collected_fees": struct.unpack_from("<Q", raw, 64)[0],
+            "is_active":      bool(raw[72]),
+            "bump":           raw[73],
         }
 
-    def parse_native_cheque(self, cheque_id) -> dict:
+    def parse_native_cheque(self, cheque_id_or_pda) -> dict:
         """
         Read and decode a NativeCheque PDA.
-
-        NativeCheque layout (after 8-byte discriminator):
-          creator (32) | cheque_id (32) | amount_per_user (u64) |
-          recipients (Vec<Pubkey>) | claimed (Vec<bool>) | bump (u8)
+        Accepts either a cheque_id (str/bytes) or a base58 PDA address.
 
         Returns:
-            dict: {
-                "pda":             str,
-                "creator":         str,
-                "cheque_id":       str (hex),
-                "amount_per_user": int,      # lamports per recipient
-                "recipients":      list[str],
-                "claimed":         list[bool],
-                "bump":            int,
-            }
+            dict: { "pda", "creator", "cheque_id", "recipient", "amount", "claimed", "bump" }
         """
-        cid = _cid(cheque_id)
-        pda, _ = self.native_cheque_pda(cid)
+        if isinstance(cheque_id_or_pda, str):
+            try:
+                pda = Pubkey.from_string(cheque_id_or_pda)
+            except Exception:
+                pda, _ = self.native_cheque_pda(_cid(cheque_id_or_pda))
+        else:
+            pda, _ = self.native_cheque_pda(_cid(cheque_id_or_pda))
+        resp = self.provider.get_account_info(pda)
+        if resp.value is None:
+            return None
+        raw = bytes(resp.value.data)[8:]
+        return {
+            "pda":       str(pda),
+            "creator":   str(Pubkey.from_bytes(raw[0:32])),
+            "cheque_id": raw[32:64].hex(),
+            "recipient": str(Pubkey.from_bytes(raw[64:96])),
+            "amount":    struct.unpack_from("<Q", raw, 96)[0],
+            "claimed":   bool(raw[104]),
+            "bump":      raw[105],
+        }
+
+    def parse_multi_cheque(self, cheque_id_or_pda) -> dict:
+        """
+        Read and decode a MultiCheque PDA.
+        Accepts either a cheque_id (str/bytes) or a base58 PDA address.
+
+        Returns:
+            dict: { "pda", "creator", "cheque_id", "amount_per_user", "recipients", "claimed", "bump" }
+        """
+        if isinstance(cheque_id_or_pda, str):
+            try:
+                pda = Pubkey.from_string(cheque_id_or_pda)
+            except Exception:
+                pda, _ = self.multi_cheque_pda(_cid(cheque_id_or_pda))
+        else:
+            pda, _ = self.multi_cheque_pda(_cid(cheque_id_or_pda))
         resp = self.provider.get_account_info(pda)
         if resp.value is None:
             return None
@@ -218,28 +244,21 @@ class SOLCheque:
             "bump":            raw[off],
         }
 
-    def parse_token_cheque(self, cheque_id) -> dict:
+    def parse_token_cheque(self, cheque_id_or_pda) -> dict:
         """
         Read and decode a TokenCheque PDA.
-
-        TokenCheque layout (after discriminator):
-          creator (32) | cheque_id (32) | recipient (32) | mint (32) |
-          amount (u64) | is_redeemed (bool) | bump (u8)
+        Accepts either a cheque_id (str/bytes) or a base58 PDA address.
 
         Returns:
-            dict: {
-                "pda":         str,
-                "creator":     str,
-                "cheque_id":   str (hex),
-                "recipient":   str,
-                "mint":        str,
-                "amount":      int,
-                "is_redeemed": bool,
-                "bump":        int,
-            }
+            dict: { "pda", "creator", "cheque_id", "recipient", "mint", "amount", "is_redeemed", "bump" }
         """
-        cid = _cid(cheque_id)
-        pda, _ = self.token_cheque_pda(cid)
+        if isinstance(cheque_id_or_pda, str):
+            try:
+                pda = Pubkey.from_string(cheque_id_or_pda)
+            except Exception:
+                pda, _ = self.token_cheque_pda(_cid(cheque_id_or_pda))
+        else:
+            pda, _ = self.token_cheque_pda(_cid(cheque_id_or_pda))
         resp = self.provider.get_account_info(pda)
         if resp.value is None:
             return None
@@ -255,31 +274,21 @@ class SOLCheque:
             "bump":        raw[137],
         }
 
-    def parse_swap_cheque(self, cheque_id) -> dict:
+    def parse_swap_cheque(self, cheque_id_or_pda) -> dict:
         """
         Read and decode a SwapCheque PDA.
-
-        SwapCheque layout (after discriminator):
-          cheque_id (32) | spender (32) | receiver (32) |
-          token_in (32) | amount_in (u64) | token_out (32) |
-          amount_out (u64) | claimed (bool) | bump (u8)
+        Accepts either a cheque_id (str/bytes) or a base58 PDA address.
 
         Returns:
-            dict: {
-                "pda":        str,
-                "cheque_id":  str (hex),
-                "spender":    str,
-                "receiver":   str,
-                "token_in":   str,
-                "amount_in":  int,
-                "token_out":  str,
-                "amount_out": int,
-                "claimed":    bool,
-                "bump":       int,
-            }
+            dict: { "pda", "cheque_id", "spender", "receiver", "token_in", "amount_in", "token_out", "amount_out", "claimed", "bump" }
         """
-        cid = _cid(cheque_id)
-        pda, _ = self.swap_cheque_pda(cid)
+        if isinstance(cheque_id_or_pda, str):
+            try:
+                pda = Pubkey.from_string(cheque_id_or_pda)
+            except Exception:
+                pda, _ = self.swap_cheque_pda(_cid(cheque_id_or_pda))
+        else:
+            pda, _ = self.swap_cheque_pda(_cid(cheque_id_or_pda))
         resp = self.provider.get_account_info(pda)
         if resp.value is None:
             return None
@@ -360,44 +369,42 @@ class SOLCheque:
         tx  = Transaction(message=msg, from_keypairs=signers, recent_blockhash=blockhash)
         return str((await self.async_client.send_transaction(tx, opts=TxOpts(skip_preflight=True))).value)
 
-    # ── Native SOL group cheque ───────────────────────────────────────────────
+    # ── Native SOL cheque — single recipient ─────────────────────────────────
 
     async def init_native_cheque(
         self,
         cheque_id,
-        recipients: list,
+        recipient: str,
         lamports: int,
-        user_bps: int = 0,
         build_instruction: bool = False,
     ) -> dict:
         """
-        Create a SOL group cheque. Up to 20 recipients each claim an equal share.
-        The fee is deducted by the contract before dividing (user_bps or contract default).
+        Create a single-recipient SOL cheque (NativeCheque PDA).
 
         Args:
-            cheque_id  (str|bytes): 32-byte unique cheque identifier (string auto-padded).
-            recipients (list[str]): Up to 20 Base58 recipient addresses.
-            lamports   (int):       Total lamports to lock (fee deducted on-chain).
-            user_bps   (int):       Custom fee in bps; 0 = use contract default.
+            cheque_id (str|bytes): 32-byte unique cheque identifier.
+            recipient (str):       Base58 recipient address.
+            lamports  (int):       Total lamports to lock (fee deducted on-chain at NATIVE_BPS=0.15%).
 
         Returns:
-            dict: { "cheque_pda": str, "cheque_id": str (hex), "signature": str }
+            dict: { "tx": str, "id": str }
         """
         if not self.key:
             raise ValueError("Keypair not set")
         cid = _cid(cheque_id)
         config_pda, _ = self.config_pda()
         cheque_pda, _ = self.native_cheque_pda(cid)
-        payer_pk = self.key.pubkey()
+        payer_pk      = self.key.pubkey()
+        recipient_pk  = Pubkey.from_string(recipient)
 
-        # Borsh: [u8;32] | Vec<Pubkey>(len u32 + 32*n) | u64 user_bps | u64 lamports
-        recipient_pks = [Pubkey.from_string(r) for r in recipients]
+        cfg         = self.get_config()
+        treasury_pk = Pubkey.from_string(cfg["treasury"])
+
+        # Borsh: [u8;32] cheque_id | Pubkey(32) recipient | u64 lamports
         data = (
             _disc("init_native_cheque")
             + cid
-            + struct.pack("<I", len(recipient_pks))
-            + b"".join(bytes(r) for r in recipient_pks)
-            + struct.pack("<Q", user_bps)
+            + bytes(recipient_pk)
             + struct.pack("<Q", lamports)
         )
         ix = Instruction(
@@ -406,6 +413,7 @@ class SOLCheque:
             accounts=[
                 AccountMeta(pubkey=config_pda,     is_signer=False, is_writable=True),
                 AccountMeta(pubkey=cheque_pda,     is_signer=False, is_writable=True),
+                AccountMeta(pubkey=treasury_pk,    is_signer=False, is_writable=True),
                 AccountMeta(pubkey=payer_pk,       is_signer=True,  is_writable=True),
                 AccountMeta(pubkey=SYSTEM_PROGRAM, is_signer=False, is_writable=False),
             ],
@@ -413,22 +421,90 @@ class SOLCheque:
         if build_instruction:
             return [ix]
         sig = await self._send_async([ix])
-        return {"cheque_pda": str(cheque_pda), "cheque_id": cid.hex(), "signature": sig}
+        return {"tx": sig, "id": str(cheque_pda)}
+
+    # ── Native SOL cheque — multi recipient ──────────────────────────────────
+
+    async def init_multi_cheque(
+        self,
+        cheque_id,
+        recipients: list,
+        lamports: int,
+        build_instruction: bool = False,
+    ) -> dict:
+        """
+        Create a multi-recipient SOL cheque (MultiCheque PDA). Up to 20 recipients.
+
+        Args:
+            cheque_id  (str|bytes): 32-byte unique cheque identifier.
+            recipients (list[str]): Up to 20 Base58 recipient addresses.
+            lamports   (int):       Total lamports to lock (fee deducted on-chain at MULTI_BPS=0.30%).
+
+        Returns:
+            dict: { "tx": str, "id": str }
+        """
+        if not self.key:
+            raise ValueError("Keypair not set")
+        cid = _cid(cheque_id)
+        config_pda, _ = self.config_pda()
+        cheque_pda, _ = self.multi_cheque_pda(cid)
+        payer_pk      = self.key.pubkey()
+
+        cfg         = self.get_config()
+        treasury_pk = Pubkey.from_string(cfg["treasury"])
+
+        recipient_pks = [Pubkey.from_string(r) for r in recipients]
+        # Borsh: [u8;32] cheque_id | Vec<Pubkey>(u32 len + 32*n) recipients | u64 lamports
+        data = (
+            _disc("init_multi_cheque")
+            + cid
+            + struct.pack("<I", len(recipient_pks))
+            + b"".join(bytes(r) for r in recipient_pks)
+            + struct.pack("<Q", lamports)
+        )
+        ix = Instruction(
+            program_id=self.PROGRAM_ID,
+            data=data,
+            accounts=[
+                AccountMeta(pubkey=config_pda,     is_signer=False, is_writable=True),
+                AccountMeta(pubkey=cheque_pda,     is_signer=False, is_writable=True),
+                AccountMeta(pubkey=treasury_pk,    is_signer=False, is_writable=True),
+                AccountMeta(pubkey=payer_pk,       is_signer=True,  is_writable=True),
+                AccountMeta(pubkey=SYSTEM_PROGRAM, is_signer=False, is_writable=False),
+            ],
+        )
+        if build_instruction:
+            return [ix]
+        sig = await self._send_async([ix])
+        return {"tx": sig, "id": str(cheque_pda)}
 
     async def cash_out_native_cheque(self, cheque_id, build_instruction: bool = False) -> dict:
         """
         Claim your SOL share from a group cheque. Caller must be in the recipients list.
 
         Args:
-            cheque_id (str|bytes): Cheque identifier.
+            cheque_id (str|bytes): Cheque identifier OR base58 PDA address.
 
         Returns:
-            dict: { "signature": str }
+            dict: { "tx": str, "id": str, "pda": str }
         """
         if not self.key:
             raise ValueError("Keypair not set")
-        cid = _cid(cheque_id)
-        cheque_pda, _ = self.native_cheque_pda(cid)
+        if isinstance(cheque_id, str):
+            try:
+                cheque_pda = Pubkey.from_string(cheque_id)
+                on_chain = self.parse_native_cheque(cheque_pda)
+                if on_chain is None:
+                    raise ValueError("Cheque not found on-chain")
+                cid = bytes.fromhex(on_chain["cheque_id"])
+            except (ValueError, RuntimeError):
+                raise
+            except Exception:
+                cid = _cid(cheque_id)
+                cheque_pda, _ = self.native_cheque_pda(cid)
+        else:
+            cid = _cid(cheque_id)
+            cheque_pda, _ = self.native_cheque_pda(cid)
         payer_pk = self.key.pubkey()
 
         data = _disc("cash_out_native_cheque") + cid
@@ -442,7 +518,7 @@ class SOLCheque:
         )
         if build_instruction:
             return ix
-        return {"signature": await self._send_async([ix])}
+        return {"tx": await self._send_async([ix]), "id": cid.hex(), "pda": str(cheque_pda)}
 
     async def close_native_cheque(self, cheque_id, build_instruction: bool = False) -> dict:
         """
@@ -479,7 +555,87 @@ class SOLCheque:
         )
         if build_instruction:
             return ix
-        return {"signature": await self._send_async([ix])}
+        return {"tx": await self._send_async([ix]), "id": cid.hex(), "pda": str(cheque_pda)}
+
+    async def cash_out_multi_cheque(self, cheque_id, build_instruction: bool = False) -> dict:
+        """
+        Claim your SOL share from a multi-recipient cheque (MultiCheque PDA).
+        Caller must be in the recipients list.
+
+        Args:
+            cheque_id (str|bytes): Cheque identifier OR base58 PDA address.
+
+        Returns:
+            dict: { "tx": str, "id": str, "pda": str }
+        """
+        if not self.key:
+            raise ValueError("Keypair not set")
+        if isinstance(cheque_id, str):
+            try:
+                cheque_pda = Pubkey.from_string(cheque_id)
+                on_chain = self.parse_multi_cheque(cheque_pda)
+                if on_chain is None:
+                    raise ValueError("Cheque not found on-chain")
+                cid = bytes.fromhex(on_chain["cheque_id"])
+            except (ValueError, RuntimeError):
+                raise
+            except Exception:
+                cid = _cid(cheque_id)
+                cheque_pda, _ = self.multi_cheque_pda(cid)
+        else:
+            cid = _cid(cheque_id)
+            cheque_pda, _ = self.multi_cheque_pda(cid)
+        payer_pk = self.key.pubkey()
+
+        data = _disc("cash_out_multi_cheque") + cid
+        ix = Instruction(
+            program_id=self.PROGRAM_ID,
+            data=data,
+            accounts=[
+                AccountMeta(pubkey=cheque_pda, is_signer=False, is_writable=True),
+                AccountMeta(pubkey=payer_pk,   is_signer=True,  is_writable=True),
+            ],
+        )
+        if build_instruction:
+            return ix
+        return {"tx": await self._send_async([ix]), "id": cid.hex(), "pda": str(cheque_pda)}
+
+    async def close_multi_cheque(self, cheque_id, build_instruction: bool = False) -> dict:
+        """
+        Close a MultiCheque PDA and recover rent. Creator only.
+        Unclaimed funds + early-close penalty (10%) go to treasury if not all claimed.
+
+        Args:
+            cheque_id (str|bytes): Cheque identifier.
+
+        Returns:
+            dict: { "signature": str }
+        """
+        if not self.key:
+            raise ValueError("Keypair not set")
+        cid = _cid(cheque_id)
+        config_pda, _ = self.config_pda()
+        cheque_pda, _ = self.multi_cheque_pda(cid)
+        payer_pk = self.key.pubkey()
+
+        cfg = self.get_config()
+        treasury_pk = Pubkey.from_string(cfg["treasury"])
+
+        data = _disc("close_multi_cheque") + cid
+        ix = Instruction(
+            program_id=self.PROGRAM_ID,
+            data=data,
+            accounts=[
+                AccountMeta(pubkey=cheque_pda,   is_signer=False, is_writable=True),
+                AccountMeta(pubkey=payer_pk,     is_signer=False, is_writable=True),  # creator (close = creator)
+                AccountMeta(pubkey=treasury_pk,  is_signer=False, is_writable=True),
+                AccountMeta(pubkey=config_pda,   is_signer=False, is_writable=False),
+                AccountMeta(pubkey=payer_pk,     is_signer=True,  is_writable=True),  # signer
+            ],
+        )
+        if build_instruction:
+            return ix
+        return {"tx": await self._send_async([ix]), "id": cid.hex(), "pda": str(cheque_pda)}
 
     # ── SPL Token cheque ──────────────────────────────────────────────────────
 
@@ -489,7 +645,6 @@ class SOLCheque:
         mint: str,
         amount: int,
         recipient: str,
-        user_bps: int = 0,
         build_instruction: bool = False,
     ) -> dict:
         """
@@ -497,15 +652,13 @@ class SOLCheque:
         Vault ATA is owned by the TokenCheque PDA and created automatically.
 
         Args:
-            cheque_id    (str|bytes): 32-byte cheque identifier.
-            mint         (str):       Token mint address.
-            amount       (int):       Raw token amount (decimals already applied).
-            recipient    (str):       Recipient wallet address (stored on-chain).
-            user_bps     (int):       Custom fee bps; 0 = contract default.
-            treasury_ata (str):       Treasury ATA for this mint. Derived if omitted.
+            cheque_id (str|bytes): 32-byte cheque identifier.
+            mint      (str):       Token mint address.
+            amount    (int):       Raw token amount (decimals already applied).
+            recipient (str):       Recipient wallet address (stored on-chain).
 
         Returns:
-            dict: { "cheque_pda": str, "cheque_id": str (hex), "signature": str }
+            dict: { "tx": str, "id": str }
         """
         if not self.key:
             raise ValueError("Keypair not set")
@@ -522,8 +675,8 @@ class SOLCheque:
         signer_ata  = get_associated_token_address(payer_pk, mint_pk)
         vault_ata   = get_associated_token_address(token_cheque_pda, mint_pk)
 
-        # Borsh: [u8;32] | u64 amount | u64 user_bps
-        data = _disc("init_token_cheque") + cid + struct.pack("<Q", amount) + struct.pack("<Q", user_bps)
+        # Borsh: [u8;32] cheque_id | u64 amount
+        data = _disc("init_token_cheque") + cid + struct.pack("<Q", amount)
         ix = Instruction(
             program_id=self.PROGRAM_ID,
             data=data,
@@ -545,40 +698,39 @@ class SOLCheque:
         if build_instruction:
             return ix
         sig = await self._send_async([ix])
-        return {"cheque_pda": str(token_cheque_pda), "cheque_id": cid.hex(), "signature": sig}
+        return {"tx": sig, "id": str(token_cheque_pda)}
 
     async def cash_out_token_cheque(
         self,
         cheque_id,
-        mint: str,
         recipient_ata: str = None,
         build_instruction: bool = False,
     ) -> dict:
         """
         Redeem a token cheque — tokens released from vault to recipient ATA.
+        Mint and amount are read from the on-chain TokenCheque PDA automatically.
         Caller must be the designated recipient stored on-chain.
 
         Args:
-            cheque_id     (str|bytes): Cheque identifier.
-            mint          (str):       Token mint address.
+            cheque_id     (str|bytes): Cheque identifier OR base58 PDA address.
             recipient_ata (str):       Recipient's ATA. Derived from self.key if omitted.
 
         Returns:
-            dict: { "signature": str }
+            dict: { "tx": str, "id": str }
         """
         if not self.key:
             raise ValueError("Keypair not set")
-        cid = _cid(cheque_id)
-        token_cheque_pda, _ = self.token_cheque_pda(cid)
-        payer_pk  = self.key.pubkey()
-        mint_pk   = Pubkey.from_string(mint)
+        payer_pk = self.key.pubkey()
+
+        on_chain = self.parse_token_cheque(cheque_id)
+        if on_chain is None:
+            raise ValueError("Token cheque not found on-chain")
+        cid              = bytes.fromhex(on_chain["cheque_id"])
+        token_cheque_pda = Pubkey.from_string(on_chain["pda"])
+        mint_pk          = Pubkey.from_string(on_chain["mint"])
 
         vault_ata  = get_associated_token_address(token_cheque_pda, mint_pk)
         recip_ata  = Pubkey.from_string(recipient_ata) if recipient_ata else get_associated_token_address(payer_pk, mint_pk)
-
-        # creator needed for 50/50 rent split — read from on-chain state
-        cheque_data = self.parse_token_cheque(cheque_id)
-        creator_pk  = Pubkey.from_string(cheque_data["creator"])
 
         data = _disc("cash_out_token_cheque") + cid
         ix = Instruction(
@@ -589,14 +741,13 @@ class SOLCheque:
                 AccountMeta(pubkey=mint_pk,          is_signer=False, is_writable=False),
                 AccountMeta(pubkey=vault_ata,        is_signer=False, is_writable=True),
                 AccountMeta(pubkey=recip_ata,        is_signer=False, is_writable=True),
-                AccountMeta(pubkey=creator_pk,       is_signer=False, is_writable=True),
                 AccountMeta(pubkey=payer_pk,         is_signer=True,  is_writable=True),
                 AccountMeta(pubkey=TOKEN_PROGRAM_ID, is_signer=False, is_writable=False),
             ],
         )
         if build_instruction:
             return ix
-        return {"signature": await self._send_async([ix])}
+        return {"tx": await self._send_async([ix]), "id": cid.hex(), "pda": str(token_cheque_pda)}
 
     # ── Swap cheque ───────────────────────────────────────────────────────────
 
@@ -608,13 +759,12 @@ class SOLCheque:
         amount_in: int,
         amount_out: int,
         receiver: str,
-        user_bps: int = 0,
         treasury_ata_in: str = None,
         build_instruction: bool = False,
     ) -> dict:
         """
         Lock token_in in a vault ATA. Receiver must deliver token_out to unlock it.
-        Fee on token_in is sent to treasury ATA at init time.
+        Fee on token_in is sent to treasury ATA at init time (SWAP_BPS=0.50%).
 
         Args:
             cheque_id       (str|bytes): 32-byte cheque identifier.
@@ -623,11 +773,10 @@ class SOLCheque:
             amount_in       (int):       Raw amount of token_in to lock (fee deducted by contract).
             amount_out      (int):       Raw amount of token_out the receiver must deliver.
             receiver        (str):       Wallet address allowed to cash out.
-            user_bps        (int):       Custom fee bps; 0 = contract default.
             treasury_ata_in (str):       Treasury ATA for mint_in. Derived if omitted.
 
         Returns:
-            dict: { "cheque_pda": str, "cheque_id": str (hex), "signature": str }
+            dict: { "tx": str, "id": str }
         """
         if not self.key:
             raise ValueError("Keypair not set")
@@ -645,14 +794,13 @@ class SOLCheque:
         signer_ata   = get_associated_token_address(payer_pk, mint_in_pk)
         vault_ata    = get_associated_token_address(swap_cheque_pda, mint_in_pk)
 
-        # Borsh: [u8;32] | Pubkey receiver | u64 amount_in | u64 amount_out | u64 user_bps
+        # Borsh: [u8;32] cheque_id | Pubkey(32) receiver | u64 amount_in | u64 amount_out
         data = (
             _disc("init_swap_cheque")
             + cid
             + bytes(receiver_pk)
             + struct.pack("<Q", amount_in)
             + struct.pack("<Q", amount_out)
-            + struct.pack("<Q", user_bps)
         )
         ix = Instruction(
             program_id=self.PROGRAM_ID,
@@ -675,15 +823,11 @@ class SOLCheque:
         if build_instruction:
             return ix
         sig = await self._send_async([ix])
-        return {"cheque_pda": str(swap_cheque_pda), "cheque_id": cid.hex(), "signature": sig}
+        return {"tx": sig, "id": str(swap_cheque_pda)}
 
     async def cash_out_swap_cheque(
         self,
         cheque_id,
-        mint_in: str,
-        mint_out: str,
-        spender: str,
-        treasury_ata_in: str = None,
         treasury_ata_out: str = None,
         receiver_ata_in: str = None,
         receiver_ata_out: str = None,
@@ -692,32 +836,32 @@ class SOLCheque:
     ) -> dict:
         """
         Deliver token_out to receive token_in from the vault.
-        Fees on both legs are charged by the contract.
+        mint_in, mint_out and spender are read from the on-chain SwapCheque PDA automatically.
         Caller must be the designated receiver.
 
         Args:
-            cheque_id        (str|bytes): Cheque identifier.
-            mint_in          (str):       Mint of the locked token_in.
-            mint_out         (str):       Mint of the token_out to deliver.
-            spender          (str):       Spender's wallet (receives token_out).
-            treasury_ata_in  (str):       Treasury ATA for mint_in.  Derived if omitted.
+            cheque_id        (str|bytes): Cheque identifier OR base58 PDA address.
             treasury_ata_out (str):       Treasury ATA for mint_out. Derived if omitted.
             receiver_ata_in  (str):       Receiver ATA for mint_in.  Derived if omitted.
             receiver_ata_out (str):       Receiver ATA for mint_out. Derived if omitted.
             spender_ata_out  (str):       Spender ATA for mint_out.  Derived if omitted.
 
         Returns:
-            dict: { "signature": str }
+            dict: { "tx": str, "id": str }
         """
         if not self.key:
             raise ValueError("Keypair not set")
-        cid = _cid(cheque_id)
-        config_pda, _      = self.config_pda()
-        swap_cheque_pda, _ = self.swap_cheque_pda(cid)
-        signer_pk   = self.key.pubkey()
-        mint_in_pk  = Pubkey.from_string(mint_in)
-        mint_out_pk = Pubkey.from_string(mint_out)
-        spender_pk  = Pubkey.from_string(spender)
+        signer_pk     = self.key.pubkey()
+        config_pda, _ = self.config_pda()
+
+        on_chain = self.parse_swap_cheque(cheque_id)
+        if on_chain is None:
+            raise ValueError("Swap cheque not found on-chain")
+        cid             = bytes.fromhex(on_chain["cheque_id"])
+        swap_cheque_pda = Pubkey.from_string(on_chain["pda"])
+        mint_in_pk      = Pubkey.from_string(on_chain["token_in"])
+        mint_out_pk     = Pubkey.from_string(on_chain["token_out"])
+        spender_pk      = Pubkey.from_string(on_chain["spender"])
 
         cfg = self.get_config()
         treasury_pk = Pubkey.from_string(cfg["treasury"])
@@ -729,7 +873,6 @@ class SOLCheque:
         receiver_ata_in_pk  = _ata(signer_pk,   mint_in_pk,  receiver_ata_in)
         receiver_ata_out_pk = _ata(signer_pk,   mint_out_pk, receiver_ata_out)
         spender_ata_out_pk  = _ata(spender_pk,  mint_out_pk, spender_ata_out)
-        treas_ata_in_pk     = _ata(treasury_pk, mint_in_pk,  treasury_ata_in)
         treas_ata_out_pk    = _ata(treasury_pk, mint_out_pk, treasury_ata_out)
 
         data = _disc("cash_out_swap_cheque") + cid
@@ -745,13 +888,11 @@ class SOLCheque:
                 AccountMeta(pubkey=receiver_ata_in_pk,  is_signer=False, is_writable=True),
                 AccountMeta(pubkey=receiver_ata_out_pk, is_signer=False, is_writable=True),
                 AccountMeta(pubkey=spender_ata_out_pk,  is_signer=False, is_writable=True),
-                AccountMeta(pubkey=treas_ata_in_pk,     is_signer=False, is_writable=True),
                 AccountMeta(pubkey=treas_ata_out_pk,    is_signer=False, is_writable=True),
-                AccountMeta(pubkey=spender_pk,          is_signer=False, is_writable=True),  # rent split
                 AccountMeta(pubkey=signer_pk,           is_signer=True,  is_writable=True),
                 AccountMeta(pubkey=TOKEN_PROGRAM_ID,    is_signer=False, is_writable=False),
             ],
         )
         if build_instruction:
             return ix
-        return {"signature": await self._send_async([ix])}
+        return {"tx": await self._send_async([ix]), "id": cid.hex(), "pda": str(swap_cheque_pda)}

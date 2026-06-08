@@ -12,6 +12,9 @@ from dataclasses import dataclass
 from typing import Union, Optional, Dict, List
 import base58
 import base64
+import hashlib
+import json
+import time
 from functools import wraps
 import asyncio, inspect
 
@@ -107,6 +110,19 @@ class _Helper():
         self._IV_SIZE = _IV_SIZE
         self._KEY_SIZE = _KEY_SIZE
         self.obj = obj
+    @staticmethod
+    def debug(fn):
+        import inspect
+        sig = inspect.signature(fn)
+        def wrapper(*args, **kwargs):
+            bound = sig.bind(*args, **kwargs)
+            bound.apply_defaults()
+            pretty = " | ".join(f"{k}={v!r}" for k, v in bound.arguments.items())
+            print(f"[{fn.__name__}] {pretty}")
+            return fn(*args, **kwargs)
+        wrapper.__name__ = fn.__name__
+        return wrapper
+
     def parse_line(self, line: str, sep: str = None, label: str = "transfer", default="requier") -> list[str]:
         """
         Parse a line into [from, to, amount].
@@ -184,7 +200,32 @@ class _Helper():
                 elif isinstance(obj, (list, tuple)):
                     stack.extend(obj)
         return default
+    def deep_get_path_traversal(self, data, keys: list, default=None):
+        """
+        Traverse a nested dict/list by path.
+        Each element of *keys* is a step: dict key or list index (int).
+        Returns *default* if any step is missing or the type doesn't match.
 
+        Examples:
+            data = {"blockchain_card": {"EVM": {"chain": 7}}}
+
+            deep_get(data, ["blockchain_card", "EVM", "chain"])  → 7
+            deep_get(data, ["blockchain_card", "SOL", "chain"])  → 0  (default)
+            deep_get(data, ["missing"], "N/A")                   → "N/A"
+        """
+        cur = data
+        for key in keys:
+            if isinstance(cur, dict):
+                if key not in cur:
+                    return default
+                cur = cur[key]
+            elif isinstance(cur, (list, tuple)) and isinstance(key, int):
+                if key < 0 or key >= len(cur):
+                    return default
+                cur = cur[key]
+            else:
+                return default
+        return cur if cur is not None else default
     def _derive_key(self,password: str, salt: bytes) -> bytes:
         """Derive a 256-bit key from a password using PBKDF2-HMAC-SHA256."""
         from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -326,6 +367,24 @@ def _format_tx(explorer,tx_hash: str) -> str:
     if explorer:
         return f"{explorer.rstrip('/')}/tx/{tx_hash}"
     return tx_hash
+
+
+def derive_cheque_id(params: dict, timestamp: Optional[int] = None) -> bytes:
+    """
+    Deterministic 32-byte cheque_id derived from cheque creation params + timestamp.
+
+    The timestamp guards against id collisions when identical params are reused
+    (e.g. same sender/recipient/amount cheque created twice — without it both
+    would derive the same id and the second on-chain init would fail).
+
+    Pass the same *timestamp* you used at creation time to reproduce the id
+    locally for later lookups (id/PDA can be computed client-side, no round-trip
+    to the contract or backend needed).
+    """
+    if timestamp is None:
+        timestamp = int(time.time())
+    payload = json.dumps({**params, "timestamp": timestamp}, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return hashlib.sha256(payload).digest().hex()
 
 
 

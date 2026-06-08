@@ -1,6 +1,6 @@
 from web3 import Web3
 import json
-import OrbisPaySDK.utils as utils
+import OrbisPaySDK.utils.utils as utils
 from OrbisPaySDK.const import ERC20_SIGNATURES, __NULL_ADDRESS__, __ORBISPAY_DOMAIN_ABI, __MULTICALL3__,__MULTICALL3_ABI__
 from eth_account import Account
 from eth_account.messages import encode_defunct
@@ -10,6 +10,23 @@ from datetime import datetime, timezone
 
 
 
+
+
+def _gas_params(w3: Web3) -> dict:
+    """
+    Returns EIP-1559 gas fields if the chain supports it, otherwise legacy gasPrice.
+    maxFeePerGas = baseFee * 2 + tip — keeps the tx valid for ~6 blocks of base-fee growth.
+    """
+    latest = w3.eth.get_block("latest")
+    base_fee = latest.get("baseFeePerGas")
+    if base_fee is not None:
+        tip = w3.eth.max_priority_fee
+        return {
+            "type": 2,
+            "maxPriorityFeePerGas": int(tip),
+            "maxFeePerGas": int(base_fee * 2 + tip),
+        }
+    return {"gasPrice": int(w3.eth.gas_price * 1.1)}
 
 
 class EVM():
@@ -31,7 +48,34 @@ class EVM():
         self.contract = contract
         self.currency = currency
         self.build_tx = build_tx
+    def modify_tx(self,tx: dict, w3: Web3 = None, from_addr: str = None, to_addr: str = None, value: int = None) -> dict:
+        w3 = w3 or self.w3
+        chain_id  = w3.eth.chain_id
 
+        nonce  = w3.eth.get_transaction_count(from_addr)
+        latest = w3.eth.get_block('latest')
+        gas    = w3.eth.estimate_gas({'from': from_addr, 'to': to_addr, 'value': value})
+
+        
+        if latest.get('baseFeePerGas') is not None:
+            tip = w3.eth.max_priority_fee
+            base = latest['baseFeePerGas']
+            max_fee = base * 2 + tip
+            if tx == {}:
+                tx = {
+                    'type': 0x2, 'chainId': chain_id, 'nonce': nonce,
+                    'to': to_addr, 'value': value, 'gas': int(gas),
+                    'maxPriorityFeePerGas': int(tip),
+                    'maxFeePerGas': int(max_fee),
+                }
+        else:
+            if tx == {}:
+                tx = {
+                    'chainId': chain_id, 'nonce': nonce,
+                    'to': to_addr, 'value': value, 'gas': int(gas),
+                    'gasPrice': int(w3.eth.gas_price * 1.10),
+                }
+        return tx
     def set_params(self, w3:Web3 = None, key:str = None, address:str = None, currency:str = None, build_tx: bool = None):
         """
         Updates instance parameters at runtime.
@@ -47,6 +91,7 @@ class EVM():
             self.w3 = w3
         if key:
             self.key = key
+            self.address = self.get_address()
         if address:
             self.address = address
         if currency:
@@ -118,16 +163,16 @@ class EVM():
         }
         
         try:
-            # Получаем данные транзакции
+            # Fetch transaction data
             tx = self.w3.eth.get_transaction(tx_hash)
             if tx is None:
                 result["error"] = "Transaction not found"
                 return result
-            
-            # Базовые данные транзакции
+
+            # Populate base transaction fields
             result.update({
                 "from_address": tx.get("from", ""),
-                "to_address": tx.get("to", "") or "",  # None для contract creation
+                "to_address": tx.get("to", "") or "",  # None for contract creation
                 "value_wei": tx.get("value", 0),
                 "value_eth": str(self.w3.from_wei(tx.get("value", 0), "ether")),
                 "gas_limit": tx.get("gas", 0),
@@ -151,10 +196,10 @@ class EVM():
                 result["tx_category"] = "native_transfer"
             else:
                 result["tx_category"] = "contract_call"
-                # Извлекаем method signature (первые 4 байта)
+                # Extract method signature (first 4 bytes of calldata)
                 if len(input_data) >= 10:
                     result["method_id"] = input_data[:10] if isinstance(input_data, str) else "0x" + input_data[:4].hex()
-            
+
             try:
                 receipt = self.w3.eth.get_transaction_receipt(tx_hash)
                 if receipt:
@@ -163,19 +208,19 @@ class EVM():
                         "gas_used": receipt.get("gasUsed", 0),
                         "effective_gas_price": receipt.get("effectiveGasPrice"),
                         "cumulative_gas_used": receipt.get("cumulativeGasUsed"),
-                        "contract_address": receipt.get("contractAddress"),  # Для contract creation
+                        "contract_address": receipt.get("contractAddress"),  # set on contract creation
                         "logs_count": len(receipt.get("logs", [])),
                         "logs_bloom": receipt.get("logsBloom").hex() if receipt.get("logsBloom") else None,
                     })
-                    
-                    # Рассчитываем комиссию
+
+                    # Calculate actual transaction fee from receipt
                     gas_used = receipt.get("gasUsed", 0)
                     effective_price = receipt.get("effectiveGasPrice") or tx.get("gasPrice", 0)
                     fee_wei = gas_used * effective_price
                     result["fee_wei"] = fee_wei
                     result["fee_eth"] = str(self.w3.from_wei(fee_wei, "ether"))
-                    
-                    # Парсим логи (events)
+
+                    # Parse transaction logs (events)
                     logs = receipt.get("logs", [])
                     parsed_logs = []
                     for log in logs:
@@ -317,19 +362,18 @@ class EVM():
         checksum_to = Web3.to_checksum_address(to)
         
         nonce = self.w3.eth.get_transaction_count(self.address)
-        gas_price = self.w3.eth.gas_price
-        
+
         tx = {
             "from": self.address,
             "to": checksum_to,
             "value": self.w3.to_wei(amount, "ether"),
             "gas": 21000,
-            "gasPrice": gas_price,
             "nonce": nonce,
             "chainId": self.w3.eth.chain_id,
+            **_gas_params(self.w3),
         }
         if self.build_tx:
-            return tx
+            return {"tx":tx}
 
         return self.sign_and_send(tx)
     def sign_and_send(self, tx: dict, key: str = None):
@@ -348,9 +392,9 @@ class EVM():
         """
         if not self.w3:
             raise ValueError("Web3 instance is not initialized in EVM class")
-        
-        nonce = self.w3.eth.get_transaction_count(self.address)
-        tx["nonce"] = nonce
+        tx = self.modify_tx(tx, w3=self.w3, from_addr=tx.get("from"), to_addr=tx.get("to"), value=tx.get("value", 0))
+        # nonce = self.w3.eth.get_transaction_count(self.address)
+        # tx["nonce"] = nonce
         target_key = key if key else self.key
 
         signed = self.w3.eth.account.sign_transaction(tx, target_key)
@@ -366,13 +410,39 @@ class EVM():
 
 
         return self.w3.to_hex(tx_hash),
-    def tx_to_human_view(self, tx_raw: dict) -> dict:
+
+    def parse_receipt_gas(self, receipt = None, tx: dict = None,w3: Web3 = None) -> dict:
+        """
+        Extracts actual gas usage and fee from a transaction receipt.
+
+        Returns:
+            dict: { gas_used, effective_gas_price_gwei, fee_wei, fee_eth, block_number, status }
+        """
+        if w3 is None:
+            w3 = self.w3
+        if receipt is None:
+            receipt = w3.eth.get_transaction_receipt(tx.get("hash"))
+        gas_used        = receipt.gasUsed
+        effective_price = getattr(receipt, "effectiveGasPrice", None) or (tx or {}).get("gasPrice", 0)
+        fee_wei         = gas_used * effective_price
+        fee_eth         = self.w3.from_wei(fee_wei, "ether")
+        return {
+            "gas_used":                  gas_used,
+            "effective_gas_price_gwei":  f"{self.w3.from_wei(effective_price, 'gwei'):.4f}",
+            "fee":                   fee_wei,
+            "fee_eth":                   f"{fee_eth:.18f}".rstrip("0").rstrip("."),
+            "block_number":              receipt.blockNumber,
+            "status":                    "success" if receipt.status == 1 else "failed",
+        }
+
+    def tx_to_human_view(self, tx_raw: dict, ERC20_SIGNATURES = ERC20_SIGNATURES) -> dict:
         """
         Converts a raw transaction dict into a human-readable summary.
         Decodes ERC20 transfer / approve calldata and Uniswap swap method IDs.
 
         Args:
             tx_raw (dict): Raw transaction dict as returned by web3.eth.get_transaction().
+            ERC20_SIGNATURES (dict): Mapping of method IDs to human-readable descriptions.
 
         Returns:
             dict: {
@@ -389,11 +459,13 @@ class EVM():
                 "error":                str | None,    # set if decoding failed
             }
         """
-        # Начальные значения
-        data_hex = tx_raw.get('data', '0x')
-        value_native = tx_raw.get('value', 0)
         
-        # Базовая структура meta
+
+        data_hex = tx_raw.get('data', '0x')
+        _v = tx_raw.get('value', 0)
+        value_native = int(_v, 16) if isinstance(_v, str) and _v.startswith('0x') else int(_v) if isinstance(_v, str) else int(_v or 0)
+
+        # Base meta structure
         meta = {
             "symbol": "Native",
             "amount": self.w3.from_wei(value_native, 'ether'),
@@ -404,44 +476,41 @@ class EVM():
             "method_id": None
         }
 
-        # Если данных нет — это обычный перевод ETH/BNB
+        # No calldata → plain native transfer (ETH/BNB)
         if not data_hex or data_hex == '0x':
             return meta
 
-        # Если есть data — это работа с контрактом
+        # Calldata present → contract interaction
         method_id = data_hex[:10].lower()
         meta["method_id"] = method_id
         meta["contract_interaction"] = True
-        meta["to_contract"] = tx_raw.get('to') # Адрес самого контракта
-        
-        # Получаем инфо из твоего словаря сигнатур
-        method_name, method_desc = self.ERC20_SIGNATURES.get(
+        meta["to_contract"] = tx_raw.get('to')  # contract address
+
+        method_name, method_desc = ERC20_SIGNATURES.get(
             method_id, ("Contract Call", "Interaction with smart-contract")
         )
         meta["action"] = method_name
         meta["description"] = method_desc
 
         try:
-            # ПАРСИНГ ПАРАМЕТРОВ (Transfer и Approve имеют одинаковую структуру аргументов)
-            # Смещение: 10 (method_id) + 64 (первый аргумент) + 64 (второй аргумент)
+            # Decode ABI-encoded arguments
+            # Layout: 10 chars (method_id) + 64 chars (arg1) + 64 chars (arg2)
             if method_id in ["0xa9059cbb", "0x095ea7b3"]:
-                # Аргумент 1: Адрес (убираем лишние нули слева)
-                # data[10:74] -> это 32 байта. Адрес занимает последние 20 байт (40 символов).
+                # Arg 1: address — strip leading zeros, last 40 hex chars = 20 bytes
                 raw_address = data_hex[10:74]
                 clean_address = "0x" + raw_address[-40:]
-                
-                # Аргумент 2: Число (Amount/Value)
+
+                # Arg 2: uint256 amount
                 raw_amount = data_hex[74:138]
                 clean_amount = int(raw_amount, 16)
-                
+
                 meta["to"] = self.w3.to_checksum_address(clean_address)
                 meta["amount_raw"] = clean_amount
-                # Мы пока не знаем decimals токена здесь, поэтому пишем raw
-                meta["amount"] = str(clean_amount) 
+                # Decimals unknown at this point — store raw value
+                meta["amount"] = str(clean_amount)
 
-            # Для Swap (Uniswap V2 / Pancake) — обычно последние 32 байта это amountOutMin или подобное
+            # Uniswap V2 / PancakeSwap swap — last 32 bytes usually amountOutMin
             elif "0x7ff36ab5" in method_id:
-                # Тут структура сложнее, но часто можно выцепить входящую сумму
                 raw_amount = data_hex[74:138]
                 meta["amount"] = str(int(raw_amount, 16))
 
@@ -449,6 +518,53 @@ class EVM():
             meta["error"] = f"Decoding failed: {str(e)}"
 
         return meta
+    def _fill_tx(self, tx: dict, w3: Web3) -> dict:
+        """Auto-fill missing tx fields and normalise hex strings → int."""
+        tx = dict(tx)
+        from_addr = tx.get("from") or self.address
+
+        actual_nonce =w3.eth.get_transaction_count(
+                            Web3.to_checksum_address(from_addr)
+                        )
+        # Normalise addresses to EIP-55 checksum (node rejects lowercase)
+        for addr_field in ("to", "from"):
+            if tx.get(addr_field):
+                try:
+                    tx[addr_field] = Web3.to_checksum_address(tx[addr_field])
+                except Exception:
+                    pass
+
+        # Hex strings → int for numeric fields
+        for field in ("gas", "value", "nonce", "chainId", "gasPrice",
+                      "maxFeePerGas", "maxPriorityFeePerGas"):
+            if isinstance(tx.get(field), str) and tx[field].startswith("0x"):
+                tx[field] = int(tx[field], 16)
+
+        # chainId
+        if "chainId" not in tx:
+            tx["chainId"] = w3.eth.chain_id
+
+        # nonce
+        if "nonce" not in tx or tx["nonce"] !=actual_nonce:
+                tx["nonce"] = actual_nonce
+
+        # gas estimate if missing
+        if "gas" not in tx:
+            try:
+                tx["gas"] = w3.eth.estimate_gas({
+                    k: tx[k] for k in ("from", "to", "value", "data") if k in tx
+                })
+            except Exception:
+                tx["gas"] = 300_000  # safe fallback
+
+        # gas price fields — add if none present
+        has_legacy = "gasPrice" in tx
+        has_1559   = "maxFeePerGas" in tx or "maxPriorityFeePerGas" in tx
+        if not has_legacy and not has_1559:
+            tx.update(_gas_params(w3))
+
+        return tx
+
     def sign(self, tx: dict = None, key: str = None, w3: Web3 = None, send: bool = False):
         """
         Signs a transaction without broadcasting it.
@@ -466,8 +582,11 @@ class EVM():
             w3 = self.w3
         if key is None:
             key = self.key
+        else:
+            self.address = self.ensure_checksum(w3, w3.eth.account.from_key(key).address)
 
-        
+        tx = self._fill_tx(tx, w3)
+
         txid = w3.eth.account.sign_transaction(tx, key)
         
 
@@ -489,7 +608,10 @@ class EVM():
     
         if tx_receipt.status != 1:
             return False
-        return f"{self.w3.to_hex(tx_hash)}"
+        return {
+            "tx":self.w3.to_hex(tx_hash),
+            "gas_info": self.parse_receipt_gas(receipt=tx_receipt)
+        }
 
 
 
@@ -576,11 +698,11 @@ class DomainService:
             raise ValueError("Private key is required for write operations")
 
         tx = fn.build_transaction({
-            "from":     self.account.address,
-            "value":    value_wei,
-            "nonce":    self.w3.eth.get_transaction_count(self.account.address),
-            "gas":      fn.estimate_gas({"from": self.account.address, "value": value_wei}),
-            "gasPrice": self.w3.eth.gas_price,
+            "from":  self.account.address,
+            "value": value_wei,
+            "nonce": self.w3.eth.get_transaction_count(self.account.address),
+            "gas":   fn.estimate_gas({"from": self.account.address, "value": value_wei}),
+            **_gas_params(self.w3),
         })
 
         signed = self.w3.eth.account.sign_transaction(tx, self.private_key)

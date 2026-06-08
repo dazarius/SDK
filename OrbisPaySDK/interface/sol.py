@@ -7,7 +7,7 @@ from solders.system_program import TransferParams as p
 import spl
 import spl.token
 import spl.token.constants
-from spl.token.instructions import get_associated_token_address, create_associated_token_account, transfer, close_account, TransferParams
+from spl.token.instructions import get_associated_token_address, create_associated_token_account, transfer, close_account, CloseAccountParams, TransferParams
 from solders.system_program import transfer as ts
 from solders.system_program import TransferParams as tsf
 from spl.token.constants import TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
@@ -141,7 +141,7 @@ class SOL:
         if build_tx:
             self.build_tx = build_tx
 
-    def get_pubkey(self, returnString: Optional[bool] = None):
+    def get_pubkey(self, addr = None, returnString: Optional[bool] = None):
         """
         Returns the public key derived from the current keypair.
 
@@ -154,6 +154,8 @@ class SOL:
         Raises:
             ValueError: If no keypair has been set.
         """
+        if addr:
+            return solders.pubkey.Pubkey.from_string(addr)
         if self.KEYPAIR:
             pubkey = self.KEYPAIR.pubkey()
             pubkey_str = str(pubkey)
@@ -351,21 +353,85 @@ class SOL:
             return token_data
     async def get_token_balance(self, data: dict):
         """
-        (Not implemented) Fetch balances for specific tokens across multiple wallets.
+        Fetches balances and Metaplex metadata for specific token mints across multiple wallets.
 
         Args:
             data (dict): {
-                "owner_pubkeys": list[str],  # list of owner addresses
-                "tokens":        list[str],  # list of token mint addresses
+                "owner_pubkeys": list[str],  # owner addresses; falls back to self.KEYPAIR
+                "tokens":        list[str],  # token mint addresses to query
+            }
+
+        Returns:
+            dict: {
+                owner_address: {
+                    mint_address: {
+                        "ui_balance":        float,
+                        "raw_balance":       str,
+                        "string_ui_balance": str,
+                        "metadata":          dict | None,  # name, symbol, uri
+                    }
+                }
             }
         """
-        owner_pubkey:list = data.get("owner_pubkeys")
-        tokens:list = data.get("tokens")
-        if not owner_pubkey or not tokens:
-            print("No owner pubkey or token list provided, using the wallet's pubkey.")
-        for owner in owner_pubkey:
-            pass
-        pass
+        from solders.pubkey import Pubkey
+
+        owner_pubkeys: list = data.get("owner_pubkeys") or []
+        tokens: list = data.get("tokens") or []
+
+        if not owner_pubkeys:
+            owner_pubkeys = [self.get_pubkey(returnString=True)]
+        if not tokens:
+            return {}
+
+        unique_mints = list(set(tokens))
+        meta_results = await asyncio.gather(
+            *[self.fetch_metadata_raw(mint) for mint in unique_mints],
+            return_exceptions=True,
+        )
+        metadata_map = {
+            mint: (meta if not isinstance(meta, Exception) else None)
+            for mint, meta in zip(unique_mints, meta_results)
+        }
+
+        async def fetch_balance(owner: str, mint: str):
+            try:
+                ata = get_associated_token_address(
+                    Pubkey.from_string(owner),
+                    Pubkey.from_string(mint),
+                )
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "getTokenAccountBalance",
+                    "params": [str(ata)],
+                }
+                async with httpx.AsyncClient() as client:
+                    r = await client.post(self.rpc_url, json=payload, timeout=10)
+                    result = r.json()
+                value = (result.get("result") or {}).get("value")
+                if not value:
+                    return owner, mint, {"ui_balance": 0.0, "raw_balance": "0", "string_ui_balance": "0"}
+                return owner, mint, {
+                    "ui_balance":        value.get("uiAmount") or 0.0,
+                    "raw_balance":       value.get("amount", "0"),
+                    "string_ui_balance": value.get("uiAmountString", "0"),
+                }
+            except Exception:
+                return owner, mint, {"ui_balance": 0.0, "raw_balance": "0", "string_ui_balance": "0"}
+
+        pairs = [(owner, mint) for owner in owner_pubkeys for mint in tokens]
+        results = await asyncio.gather(
+            *[fetch_balance(owner, mint) for owner, mint in pairs],
+            return_exceptions=True,
+        )
+
+        output: dict = {}
+        for res in results:
+            if isinstance(res, Exception):
+                continue
+            owner, mint, bal = res
+            output.setdefault(owner, {})[mint] = {**bal, "metadata": metadata_map.get(mint)}
+        return output
     async def fetch_metadata_raw(self, mint_address: str):
         """
         Reads Metaplex on-chain metadata for a token directly from the metadata PDA account.
@@ -438,7 +504,7 @@ class SOL:
             "symbol": symbol.strip(),
             "uri": uri.strip(),  
         }
-    async def transfer_token(self, to: str, amount: float):
+    async def transfer_token(self, to: str, amount, token_mint:str = None):
         """
         Transfers an SPL token to the given address.
         Automatically creates the recipient's ATA if it does not exist.
@@ -454,6 +520,8 @@ class SOL:
         Raises:
             ValueError: If TOKEN_MINT or KEYPAIR is not set.
         """
+        if token_mint:
+            self.TOKEN_MINT = token_mint
         if not self.TOKEN_MINT:
             raise ValueError("not set TOKEN_MINT.")
         if not self.KEYPAIR:
@@ -488,10 +556,10 @@ class SOL:
         tx = Transaction([self.KEYPAIR], msg, blockhash)
 
         if self.build_tx:
-            return base64.b64encode(bytes(tx)).decode()
+            return {"tx": base64.b64encode(bytes(tx)).decode()}
 
         resp = await self.client.send_transaction(tx, opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed))
-        return resp.value
+        return {"tx": str(resp.value)}
 
 
     async def transfer_native(self, to: str, amount: int):
@@ -527,9 +595,83 @@ class SOL:
         blockhash_str = latest_blockhash_resp.value.blockhash
         tx = Transaction([self.KEYPAIR], msg, blockhash_str)
         if self.build_tx:
-            return base64.b64encode(bytes(tx)).decode()
-        resp =  await self.client.send_transaction(tx)
-        return resp.value
+            return {"tx": base64.b64encode(bytes(tx)).decode()}
+        resp = await self.client.send_transaction(tx)
+        return {"tx": str(resp.value)}
+
+    async def close_token_account(
+        self,
+        mint: str,
+        destination: str = None,
+        fee_receiver: str = None,
+        keypair=None,
+    ) -> str:
+        """
+        Closes a SPL token ATA and sends the recovered rent lamports to destination.
+        If fee_receiver is provided, 10% of the rent goes to them and 90% to the owner.
+
+        Args:
+            mint         (str):           Token mint address of the ATA to close.
+            destination  (str):           Recipient of the rent lamports.
+                                          Ignored when fee_receiver is set (rent always
+                                          lands on owner first, then gets split).
+                                          Defaults to the owner's pubkey (self.KEYPAIR).
+            fee_receiver (str):           Optional address that receives 10% of the rent.
+                                          Owner keeps the remaining 90%.
+            keypair      (str|Keypair):   Account owner. Defaults to self.KEYPAIR.
+
+        Returns:
+            str: Transaction signature, or base64-encoded transaction if build_tx=True.
+
+        Raises:
+            ValueError: If KEYPAIR is not set.
+        """
+        kp = self._resolve_keypair(keypair) if keypair else self.KEYPAIR
+        if not kp:
+            raise ValueError("KEYPAIR is not set.")
+
+        owner = kp.pubkey()
+        token_pubkey = solders.pubkey.Pubkey.from_string(mint)
+        ata = get_associated_token_address(owner, token_pubkey)
+
+        ixs = []
+
+        if fee_receiver:
+            acc_info = await self.client.get_account_info(ata)
+            rent_lamports = acc_info.value.lamports if acc_info.value else 0
+            fee_lamports = rent_lamports * 10 // 100
+
+            ixs.append(close_account(CloseAccountParams(
+                program_id=TOKEN_PROGRAM_ID,
+                account=ata,
+                dest=owner,
+                owner=owner,
+            )))
+
+            if fee_lamports > 0:
+                ixs.append(ts(tsf(
+                    from_pubkey=owner,
+                    to_pubkey=solders.pubkey.Pubkey.from_string(fee_receiver),
+                    lamports=fee_lamports,
+                )))
+        else:
+            dest = solders.pubkey.Pubkey.from_string(destination) if destination else owner
+            ixs.append(close_account(CloseAccountParams(
+                program_id=TOKEN_PROGRAM_ID,
+                account=ata,
+                dest=dest,
+                owner=owner,
+            )))
+
+        blockhash = (await self.client.get_latest_blockhash()).value.blockhash
+        msg = Message(ixs, owner)
+        tx = Transaction([kp], msg, blockhash)
+
+        if self.build_tx:
+            return {"tx": base64.b64encode(bytes(tx)).decode()}
+
+        resp = await self.client.send_transaction(tx, opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed))
+        return {"tx": str(resp.value)}
 
     # ------------------------------------------------------------------ #
     #  Instruction builders  (for composing multi-send transactions)       #
@@ -693,7 +835,7 @@ class SOL:
         msg = Message(ixs, self.get_pubkey())
         tx  = Transaction([self.KEYPAIR], msg, blockhash)
         resp = await self.client.send_transaction(tx)
-        return str(resp.value)
+        return {"tx": str(resp.value)}
 
     async def multi_send_token(
         self,
@@ -746,7 +888,7 @@ class SOL:
         msg = Message(ixs, self.get_pubkey())
         tx  = Transaction([self.KEYPAIR], msg, blockhash)
         resp = await self.client.send_transaction(tx, self.KEYPAIR, opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed))
-        return str(resp.value)
+        return {"tx": str(resp.value)}
 
     # ------------------------------------------------------------------ #
     #  Multi-wallet (multi-signer) sends                                   #
@@ -899,7 +1041,7 @@ class SOL:
         msg = Message(ixs, all_signers[0].pubkey())
         tx  = Transaction(self._filter_signers(all_signers, msg), msg, blockhash)
         resp = await self.client.send_transaction(tx)
-        return str(resp.value)
+        return {"tx": str(resp.value)}
 
     async def multi_send_token_from_many(
         self,
@@ -964,7 +1106,7 @@ class SOL:
         msg = Message(ixs, all_signers[0].pubkey())
         tx  = Transaction(self._filter_signers(all_signers, msg), msg, blockhash)
         resp = await self.client.send_transaction(tx, opts=TxOpts(skip_preflight=True, preflight_commitment=Confirmed))
-        return str(resp.value)
+        return {"tx": str(resp.value)}
 
     async def build_transaction(self, data: dict):
         """
@@ -1068,7 +1210,7 @@ class SOL:
             tx,
             opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed),
         )
-        return str(resp.value)
+        return {"tx": str(resp.value)}
 
     async def _send_tx(self, tx, key: str = None):
         """
@@ -1140,7 +1282,7 @@ class SOL:
             confirm = await self.confirm_tx(signature=tx_hash)
             if not confirm["confirmed"]:
                 return {"error": confirm["error"], "status": confirm["status"]}
-            return tx_hash
+            return {"tx":tx_hash, "fee_info": await self._parse_receipt_gas(tx_hash)}
 
         except Exception as e:
             return e
@@ -1223,7 +1365,282 @@ class SOL:
             "confirmations": None,
         }
 
-    async def _parse_transaction(self, signature: str, retries: int = 5, retry_delay: float = 2.0) -> dict:
+    async def _parse_receipt_gas(self, signature: str) -> dict:
+        """
+        Fetches fee and compute unit usage for a confirmed transaction.
+
+        Args:
+            signature (str): Base58 transaction signature.
+
+        Returns:
+            dict: {
+                "fee_lamports":           int,
+                "fee_sol":                float,
+                "compute_units_consumed": int | None,   # None on very old transactions
+                "slot":                   int | None,
+                "status":                 "success" | "failed" | "not_found",
+            }
+        """
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTransaction",
+            "params": [
+                signature,
+                {
+                    "encoding": "json",
+                    "maxSupportedTransactionVersion": 0,
+                    "commitment": "confirmed",
+                },
+            ],
+        }
+        async with httpx.AsyncClient() as client:
+            r = await client.post(self.rpc_url, json=payload, timeout=15)
+            data = r.json()
+
+        tx = data.get("result")
+        if not tx:
+            return {"status": "not_found", "signature": signature}
+
+        meta = tx.get("meta") or {}
+        fee  = meta.get("fee", 0)
+        err  = meta.get("err")
+
+        return {
+            "fee":           fee,
+            "fee_ui":                fee / LAMPORTS_PER_SOL,
+            "compute_units_consumed": meta.get("computeUnitsConsumed"),
+            "slot":                   tx.get("slot"),
+            "status":                 "failed" if err else "success",
+        }
+
+    async def tx_to_human_view(self, signature: str) -> dict:
+        """
+        Converts a transaction signature into a human-readable summary dict.
+
+        Args:
+            signature (str): Base58 transaction signature.
+
+        Returns:
+            dict: {
+                "action":   str,         # "SOL Transfer" | "Token Transfer" | "Swap" | "Unknown"
+                "from":     str | None,  # sender address
+                "to":       str | None,  # recipient (None for swaps / multi-party)
+                "amount":   float,       # primary amount in human units
+                "symbol":   str,         # "SOL" or token mint abbreviated
+                "fee_sol":  float,
+                "slot":     int | None,
+                "status":   str,         # "success" | "failed"
+                "program":  str | None,  # first non-system program invoked
+                "summary":  str,         # one-line human description
+            }
+        """
+        parsed = await self._parse_transaction(signature)
+
+        if "error" in parsed:
+            return {"status": "not_found", "signature": signature}
+
+        tx_type = parsed.get("tx_type", "unknown")
+
+        result = {
+            "action":  "Unknown",
+            "from":    None,
+            "to":      None,
+            "amount":  0,
+            "symbol":  "SOL",
+            "fee_sol": float(parsed.get("fee_sol", 0)),
+            "slot":    parsed.get("slot"),
+            "status":  parsed.get("status", "unknown"),
+            "program": None,
+            "summary": parsed.get("summary", ""),
+        }
+
+        _skip = {"system", "spl-token", "spl-associated-token-account", "compute_budget"}
+        for p in parsed.get("programs", []):
+            prog = (p.get("program") or "").lower()
+            if prog and prog not in _skip:
+                result["program"] = p["program"]
+                break
+        if result["program"] is None and parsed.get("programs"):
+            result["program"] = parsed["programs"][0].get("program")
+
+        if tx_type == "sol_transfer":
+            out = [t for t in parsed["transfers"] if t["direction"] == "out"]
+            inn = [t for t in parsed["transfers"] if t["direction"] == "in"]
+            result["action"] = "SOL Transfer"
+            result["from"]   = out[0]["account"] if out else None
+            result["to"]     = inn[0]["account"] if inn else None
+            result["amount"] = abs(out[0]["change_sol"]) if out else 0
+            result["symbol"] = "SOL"
+
+        elif tx_type == "token_transfer":
+            out = [t for t in parsed["token_transfers"] if t["direction"] == "out"]
+            inn = [t for t in parsed["token_transfers"] if t["direction"] == "in"]
+            result["action"] = "Token Transfer"
+            result["from"]   = out[0]["owner"] if out else None
+            result["to"]     = inn[0]["owner"] if inn else None
+            result["amount"] = abs(out[0]["change"]) if out else 0
+            result["symbol"] = (out[0]["mint"] or "")[:8] + "…" if out else "?"
+
+        elif tx_type == "swap":
+            out_t = [t for t in parsed["token_transfers"] if t["direction"] == "out"]
+            inn_t = [t for t in parsed["token_transfers"] if t["direction"] == "in"]
+            result["action"] = "Swap"
+            result["from"]   = out_t[0]["owner"] if out_t else None
+            result["to"]     = None
+            result["amount"] = abs(out_t[0]["change"]) if out_t else 0
+            result["symbol"] = (
+                (out_t[0]["mint"] or "")[:8] + "… → " + (inn_t[0]["mint"] or "")[:8] + "…"
+                if out_t and inn_t else "?"
+            )
+
+        return result
+
+    def parse_raw_tx(self, tx) -> dict:
+        """
+        Parses a raw serialized transaction without sending it to the network.
+        Accepts the same formats as _send_tx:
+          - str  — hex string or base64 string
+          - bytes
+          - list[int] / tuple[int]
+          - Transaction / VersionedTransaction object
+
+        Returns:
+            dict: {
+                "tx_type":          str,         # "SOL Transfer" | "Token Operation" | "Jupiter Swap" | ...
+                "fee_payer":        str | None,
+                "signers":          list[str],   # required signers (first N account keys)
+                "num_accounts":     int,
+                "accounts":         list[str],   # all static account keys in the message
+                "alt_accounts":     list[str],   # address lookup table accounts (v0 only)
+                "num_instructions": int,
+                "instructions": list[{
+                    "program_id":   str,
+                    "program_name": str,         # known name or first 8 chars of ID
+                    "accounts":     list[str],   # accounts referenced by this ix
+                    "type":         str | None,  # decoded ix type if recognizable
+                    "data_hex":     str,         # raw ix data as hex
+                }],
+            }
+        """
+        import base64 as _b64
+        from solders.transaction import VersionedTransaction
+
+        KNOWN_PROGRAMS = {
+            "11111111111111111111111111111111":             "System Program",
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": "Token Program",
+            "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJe1brs": "Associated Token Program",
+            "ComputeBudget111111111111111111111111111111":  "Compute Budget",
+            "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4": "Jupiter v6",
+            "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8": "Raydium AMM v4",
+            "9W959DqEETiGZocYWCQPaJ6sBmUzgfxXfqGeTEdp3aQP": "Raydium (legacy)",
+            "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc":  "Orca Whirlpool",
+        }
+        SYSTEM_IX  = {0: "CreateAccount", 2: "Transfer", 3: "CreateAccountWithSeed", 9: "Assign"}
+        TOKEN_IX   = {3: "Transfer", 4: "Approve", 7: "MintTo", 8: "Burn",
+                      9: "CloseAccount", 12: "TransferChecked", 14: "ApproveChecked"}
+        COMPUTE_IX = {0: "SetComputeUnitLimit", 3: "SetComputeUnitPrice"}
+
+        # ── normalise input to bytes ──────────────────────────────────────────
+        if isinstance(tx, str):
+            s = tx.strip()
+            if re.fullmatch(r'[0-9a-fA-F]+', s):
+                raw = bytes.fromhex(s)
+            else:
+                try:
+                    raw = _b64.b64decode(s, validate=True)
+                except Exception:
+                    raise ValueError("tx string is neither valid hex nor base64")
+        elif isinstance(tx, (list, tuple)):
+            raw = bytes(tx)
+        elif isinstance(tx, bytes):
+            raw = tx
+        elif hasattr(tx, 'message'):
+            raw = bytes(tx)
+        else:
+            raise ValueError(f"Unsupported tx type: {type(tx)}")
+
+        vtx = VersionedTransaction.from_bytes(raw)
+        msg = vtx.message
+        account_keys = [str(k) for k in msg.account_keys]
+        num_sigs = msg.header.num_required_signatures
+
+        # v0 address lookup tables
+        alt_accounts = []
+        for alt in getattr(msg, 'address_table_lookups', None) or []:
+            alt_accounts.append(str(alt.account_key))
+
+        # ── decode each instruction ───────────────────────────────────────────
+        parsed_ixs = []
+        for ix in msg.instructions:
+            prog_idx = ix.program_id_index
+            prog_id  = account_keys[prog_idx] if prog_idx < len(account_keys) else "unknown"
+            prog_name = KNOWN_PROGRAMS.get(prog_id, prog_id[:8] + "…")
+
+            ix_accounts = [
+                account_keys[i] for i in ix.accounts if i < len(account_keys)
+            ]
+            data     = bytes(ix.data)
+            data_hex = data.hex()
+            ix_type  = None
+
+            if prog_id == "11111111111111111111111111111111" and len(data) >= 4:
+                code = int.from_bytes(data[:4], "little")
+                ix_type = SYSTEM_IX.get(code, f"unknown({code})")
+                if code == 2 and len(data) == 12:
+                    lamports = int.from_bytes(data[4:12], "little")
+                    ix_type  = f"Transfer {lamports / LAMPORTS_PER_SOL:.9f} SOL"
+
+            elif prog_id == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" and data:
+                code = data[0]
+                ix_type = TOKEN_IX.get(code, f"unknown({code})")
+
+            elif prog_id == "ComputeBudget111111111111111111111111111111" and data:
+                code = data[0]
+                ix_type = COMPUTE_IX.get(code, f"unknown({code})")
+                if code == 0 and len(data) == 5:
+                    units   = int.from_bytes(data[1:5], "little")
+                    ix_type = f"SetComputeUnitLimit {units:,}"
+                elif code == 3 and len(data) == 9:
+                    price   = int.from_bytes(data[1:9], "little")
+                    ix_type = f"SetComputeUnitPrice {price} µ-lamports"
+
+            parsed_ixs.append({
+                "program_id":   prog_id,
+                "program_name": prog_name,
+                "accounts":     ix_accounts,
+                "type":         ix_type,
+                "data_hex":     data_hex,
+            })
+
+        # ── detect overall tx type from programs used ─────────────────────────
+        prog_ids = {ix["program_id"] for ix in parsed_ixs}
+        if "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4" in prog_ids:
+            tx_type = "Jupiter Swap"
+        elif "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8" in prog_ids:
+            tx_type = "Raydium Swap"
+        elif "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc" in prog_ids:
+            tx_type = "Orca Swap"
+        elif prog_ids <= {"11111111111111111111111111111111",
+                          "ComputeBudget111111111111111111111111111111"}:
+            tx_type = "SOL Transfer"
+        elif "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" in prog_ids:
+            tx_type = "Token Operation"
+        else:
+            tx_type = "Unknown"
+
+        return {
+            "tx_type":          tx_type,
+            "fee_payer":        account_keys[0] if account_keys else None,
+            "signers":          account_keys[:num_sigs],
+            "num_accounts":     len(account_keys),
+            "accounts":         account_keys,
+            "alt_accounts":     alt_accounts,
+            "num_instructions": len(parsed_ixs),
+            "instructions":     parsed_ixs,
+        }
+
+    async def _parse_transaction(self, signature: str, retries: int = 5, retry_delay: float = 2.0, commitment: str = "finalized") -> dict:
         """
         Fetches and parses a transaction by signature using RPC getTransaction.
 
@@ -1274,7 +1691,7 @@ class SOL:
                 {
                     "encoding": "jsonParsed",
                     "maxSupportedTransactionVersion": 0,
-                    "commitment": "finalized",
+                    "commitment": commitment,
                 }
             ]
         }
@@ -1303,7 +1720,7 @@ class SOL:
             acc.get("pubkey") if isinstance(acc, dict) else acc
             for acc in message.get("accountKeys", [])
         ]
-
+        from decimal import Decimal
         result = {
             "signature":   signature,
             "status":      "failed" if err else "success",
@@ -1311,7 +1728,7 @@ class SOL:
             "slot":        tx.get("slot"),
             "timestamp":   block_time,
             "fee_lamports": fee,
-            "fee_sol":     fee / LAMPORTS_PER_SOL,
+            "fee_sol":     str(Decimal(fee) / Decimal(LAMPORTS_PER_SOL)),
             "transfers":   [],
             "token_transfers": [],
             "programs":    [],
@@ -1374,7 +1791,7 @@ class SOL:
 
         tx_type = result["tx_type"]
         status  = result["status"]
-        fee_sol = result["fee_sol"]
+        fee_sol = result["fee_sol"]  # str like "0.000005"
 
         if tx_type == "sol_transfer":
             out = [t for t in result["transfers"] if t["direction"] == "out"]
@@ -1385,7 +1802,7 @@ class SOL:
             summary  = (
                 f"SOL transfer {amount:.6f} SOL "
                 f"from {sender} → {receiver} | "
-                f"status: {status} | fee: {fee_sol:.6f} SOL"
+                f"status: {status} | fee: {fee_sol} SOL"
             )
         elif tx_type == "token_transfer":
             out = [t for t in result["token_transfers"] if t["direction"] == "out"]
@@ -1397,20 +1814,20 @@ class SOL:
             summary  = (
                 f"Token transfer {amount} [{mint}] "
                 f"from {sender} → {receiver} | "
-                f"status: {status} | fee: {fee_sol:.6f} SOL"
+                f"status: {status} | fee: {fee_sol} SOL"
             )
         elif tx_type == "swap":
             mints = list({t["mint"] for t in result["token_transfers"] if t.get("mint")})
             mints_str = " ↔ ".join(m[:8] + "…" for m in mints[:2]) if mints else "unknown tokens"
             summary = (
                 f"Swap ({mints_str}) | "
-                f"status: {status} | fee: {fee_sol:.6f} SOL"
+                f"status: {status} | fee: {fee_sol} SOL"
             )
         else:
             prog_names = ", ".join(filter(None, programs[:3])) or "unknown"
             summary = (
                 f"Transaction via [{prog_names}] | "
-                f"status: {status} | fee: {fee_sol:.6f} SOL"
+                f"status: {status} | fee: {fee_sol} SOL"
             )
 
         result["summary"] = summary
