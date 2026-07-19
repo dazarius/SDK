@@ -10,7 +10,7 @@ from OrbisPaySDK.types.SOLcheque import SOLCheque
 from OrbisPaySDK.types.TONcheque import TONCheque
 from OrbisPaySDK.types.TRXcheque import TRXCheque
 from OrbisPaySDK.types.BTCcheque import BTCCheque
-from OrbisPaySDK.const import __ERC20_ABI__, __SHADOWPAY_ABI__ERC20__,__ALLOW_CHAINS__, __SHADOWPAY_CONTRACT_ADDRESS__ERC20__
+from OrbisPaySDK.const import __ERC20_ABI__,__ALLOW_CHAINS__
 from OrbisPaySDK.utils.utils import (
     get_native_prices,
     get_native_price,
