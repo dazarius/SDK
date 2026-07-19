@@ -138,6 +138,7 @@ class Cheque:
 
     async def _resolve_cheque_type(self, display_id: str) -> str:
         if ":" in str(display_id):
+            
             return str(display_id).split(":")[-1]
         
         cheque_id_bytes = self._normalize_cheque_id(display_id)
@@ -430,6 +431,16 @@ class Cheque:
     async def getProtocolStats(self):
         s = self.contract.functions.getProtocolStats().call()
         return self._map_outputs("getProtocolStats", s)
+
+    async def getChequeInfo(self, display_id: str, address=None):
+        cheque_type, id_bytes = await self._resolve_cheque_type(display_id)
+        from OrbisPaySDK.const import CHEQUES_TYPE
+        
+        if cheque_type == CHEQUES_TYPE["NativeCheque"]: return await self.getNativeChequeInfo(id_bytes)
+        elif cheque_type == CHEQUES_TYPE["MultiCheque"]: return await self.getMultiChequeInfo(id_bytes, address)
+        elif cheque_type == CHEQUES_TYPE["TokenCheque"]: return await self.getTokenChequeInfo(id_bytes)
+        elif cheque_type == CHEQUES_TYPE["SwapCheque"]: return await self.getSwapDetail(display_id)
+        raise ValueError("Unknown cheque type")
 
     async def getNativeChequeInfo(self, cheque_id: str):
         id_bytes = self._resolve_cheque_id(cheque_id)
