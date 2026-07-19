@@ -3,6 +3,13 @@ from dataclasses import dataclass
 from solders.pubkey import Pubkey
 
 
+CHEQUES_TYPE = {
+    "NativeCheque": 'native',
+    "MultiCheque": 'multi',
+    "TokenCheque": 'token',
+    "SwapCheque": 'swap'
+}
+
 @dataclass(frozen=True)
 class EVMChain:
     name: str
@@ -246,10 +253,12 @@ __ERC20_ABI__ = json.loads("""[
     {"constant":false,"inputs":[{"name":"_from","type":"address"},{"name":"_to","type":"address"},{"name":"_value","type":"uint256"}],"name":"transferFrom","outputs":[{"name":"", "type":"bool"}],"type":"function"}
 ]""")
 
-__SHADOWPAY_CONTRACT_ADDRESS__ERC20__ = {
-    97: "0x5487C0DdCbD5465F26B446c6CAB88D8d6F7DF23b",
-    10143: "0x1d856f2eA4738d1a89E27dbfc8950a4976Db41a5"
-  }
+ORBISPAY_CONTRACT_ADDRESS = {
+  8453: '0x455a2aAa7c7DcD413F05d56462dA13522E43d0D1',
+  56: '0x455a2aAa7c7DcD413F05d56462dA13522E43d0D1',
+  42161: '0x455a2aAa7c7DcD413F05d56462dA13522E43d0D1',
+  10: '0x455a2aAa7c7DcD413F05d56462dA13522E43d0D1'
+}
 ERC20_SIGNATURES = {
     # ── ERC20 standard ──────────────────────────────────────────────────────
     "0xa9059cbb": ("Transfer",        "Sending tokens to recipient"),
@@ -281,7 +290,7 @@ ERC20_SIGNATURES = {
     "0x70a08231": ("balanceOf",  "Reading token balance"),
     "0xdd62ed3e": ("allowance",  "Reading token allowance"),
 }
-__ORBISPAY_DOMAIN_ABI = json.loads("""[
+ORBISPAY_DOMAIN_ABI = json.loads("""[
                                    [
 	{
 		"inputs": [],
@@ -796,41 +805,929 @@ __ORBISPAY_DOMAIN_ABI = json.loads("""[
 		"type": "receive"
 	}
 ]]""")
-__SHADOWPAY_ABI__ERC20__ = json.loads("""[
-	{"inputs":[{"internalType":"address","name":"_trassary","type":"address"}],"stateMutability":"nonpayable","type":"constructor"},
-	{"anonymous":false,"inputs":[{"indexed":true,"internalType":"bytes32","name":"id","type":"bytes32"}],"name":"ChequeCreated","type":"event"},
-	{"anonymous":false,"inputs":[{"indexed":true,"internalType":"bytes32","name":"id","type":"bytes32"}],"name":"ChequeClaimed","type":"event"},
-	{"inputs":[{"internalType":"bytes32","name":"chequeId","type":"bytes32"},{"internalType":"address payable","name":"_to","type":"address"}],"name":"InitNativeCheque","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"payable","type":"function"},
-	{"inputs":[{"internalType":"bytes32","name":"chequeId","type":"bytes32"}],"name":"CashOutNativeCheque","outputs":[],"stateMutability":"nonpayable","type":"function"},
-	{"inputs":[{"internalType":"bytes32","name":"chequeId","type":"bytes32"},{"internalType":"address payable[]","name":"_to","type":"address[]"}],"name":"InitMultiCheque","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"payable","type":"function"},
-	{"inputs":[{"internalType":"bytes32","name":"chequeId","type":"bytes32"}],"name":"CashOutMultiCheque","outputs":[],"stateMutability":"nonpayable","type":"function"},
-	{"inputs":[{"internalType":"bytes32","name":"chequeId","type":"bytes32"},{"internalType":"address","name":"tokenAddr","type":"address"},{"internalType":"uint256","name":"amount","type":"uint256"},{"internalType":"address payable","name":"to","type":"address"}],"name":"InitTokenCheque","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"nonpayable","type":"function"},
-	{"inputs":[{"internalType":"bytes32","name":"id","type":"bytes32"}],"name":"CashOutTokenCheque","outputs":[],"stateMutability":"nonpayable","type":"function"},
-	{"inputs":[{"internalType":"bytes32","name":"chequeId","type":"bytes32"},{"internalType":"address","name":"_reciever","type":"address"},{"internalType":"address","name":"_tokenIn","type":"address"},{"internalType":"uint256","name":"_amountIn","type":"uint256"},{"internalType":"address","name":"_tokenOut","type":"address"},{"internalType":"uint256","name":"_amountOut","type":"uint256"}],"name":"InitSwapCheque","outputs":[{"internalType":"bytes32","name":"chequeId","type":"bytes32"}],"stateMutability":"nonpayable","type":"function"},
-	{"inputs":[{"internalType":"bytes32","name":"_id","type":"bytes32"}],"name":"CashOutSwapCheque","outputs":[],"stateMutability":"nonpayable","type":"function"},
-	{"inputs":[{"internalType":"bytes32","name":"id","type":"bytes32"}],"name":"getNativeChequeInfo","outputs":[{"internalType":"address payable","name":"to","type":"address"},{"internalType":"uint256","name":"amount","type":"uint256"},{"internalType":"bool","name":"claimed","type":"bool"}],"stateMutability":"view","type":"function"},
-	{"inputs":[{"internalType":"bytes32","name":"id","type":"bytes32"},{"internalType":"address","name":"from","type":"address"}],"name":"getMultiChequeInfo","outputs":[{"internalType":"uint256","name":"amount","type":"uint256"},{"internalType":"address payable[]","name":"to","type":"address[]"},{"internalType":"bool","name":"claimed","type":"bool"}],"stateMutability":"view","type":"function"},
-	{"inputs":[{"internalType":"bytes32","name":"id","type":"bytes32"}],"name":"getTokenChequeDetail","outputs":[{"internalType":"address","name":"spender","type":"address"},{"internalType":"address","name":"token","type":"address"},{"internalType":"uint256","name":"amount","type":"uint256"},{"internalType":"address","name":"receiver","type":"address"},{"internalType":"bool","name":"claimed","type":"bool"}],"stateMutability":"view","type":"function"},
-	{"inputs":[{"internalType":"bytes32","name":"id","type":"bytes32"}],"name":"getSwapDetail","outputs":[{"internalType":"address","name":"tokenIn","type":"address"},{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"address","name":"tokenOut","type":"address"},{"internalType":"uint256","name":"amountOut","type":"uint256"},{"internalType":"address","name":"spender","type":"address"},{"internalType":"address","name":"receiver","type":"address"},{"internalType":"bool","name":"claimed","type":"bool"}],"stateMutability":"view","type":"function"},
-	{"inputs":[],"name":"getFeeData","outputs":[{"internalType":"uint256","name":"_bps","type":"uint256"},{"internalType":"uint256","name":"_feeDenominator","type":"uint256"}],"stateMutability":"view","type":"function"},
-	{"inputs":[],"name":"getProtocolStats","outputs":[{"internalType":"uint256","name":"balanceWei","type":"uint256"},{"internalType":"uint256","name":"collectedFeesWei","type":"uint256"},{"internalType":"uint256","name":"feeBps","type":"uint256"},{"internalType":"uint256","name":"feeDenominator","type":"uint256"},{"internalType":"address","name":"treasuryAddress","type":"address"},{"internalType":"address","name":"ownerAddress","type":"address"},{"internalType":"bool","name":"active","type":"bool"},{"internalType":"uint256","name":"nextWithdrawTimestamp","type":"uint256"}],"stateMutability":"view","type":"function"},
-	{"inputs":[],"name":"getBalance","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
-	{"inputs":[],"name":"getCollectedFee","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
-	{"inputs":[],"name":"getOwner","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
-	{"inputs":[],"name":"getTreasery","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
-	{"inputs":[],"name":"nextAvailableWithdraw","outputs":[{"internalType":"uint256","name":"timestamp","type":"uint256"}],"stateMutability":"view","type":"function"},
-	{"inputs":[],"name":"isActive","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},
-	{"inputs":[],"name":"COMMISSION_BPS","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
-	{"inputs":[],"name":"FEE_DENOMINATOR","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
-	{"inputs":[],"name":"collectedFees","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
-	{"inputs":[],"name":"treasery","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
-	{"inputs":[],"name":"owner","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
-	{"inputs":[{"internalType":"bool","name":"_active","type":"bool"}],"name":"activated","outputs":[],"stateMutability":"nonpayable","type":"function"},
-	{"inputs":[{"internalType":"address","name":"_treaseryAddress","type":"address"}],"name":"setTreasery","outputs":[],"stateMutability":"nonpayable","type":"function"},
-	{"inputs":[{"internalType":"address","name":"newOwner","type":"address"}],"name":"changeOwner","outputs":[],"stateMutability":"nonpayable","type":"function"},
-	{"inputs":[],"name":"withdrawFees","outputs":[],"stateMutability":"nonpayable","type":"function"},
-	{"inputs":[{"internalType":"uint256","name":"amount","type":"uint256"},{"internalType":"address","name":"_to","type":"address"}],"name":"withdrawAmount","outputs":[],"stateMutability":"nonpayable","type":"function"}
-]""")
+ORBISPAY_CHEQUES_ABI = json.loads(""" [
+			{
+				"inputs": [
+					{
+						"internalType": "address",
+						"name": "_trassary",
+						"type": "address"
+					}
+				],
+				"stateMutability": "nonpayable",
+				"type": "constructor"
+			},
+			{
+				"anonymous": false,
+				"inputs": [
+					{
+						"indexed": true,
+						"internalType": "bytes32",
+						"name": "id",
+						"type": "bytes32"
+					}
+				],
+				"name": "ChequeClaimed",
+				"type": "event"
+			},
+			{
+				"anonymous": false,
+				"inputs": [
+					{
+						"indexed": true,
+						"internalType": "bytes32",
+						"name": "id",
+						"type": "bytes32"
+					}
+				],
+				"name": "ChequeCreated",
+				"type": "event"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "chequeId",
+						"type": "bytes32"
+					}
+				],
+				"name": "CashOutMultiCheque",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "chequeId",
+						"type": "bytes32"
+					}
+				],
+				"name": "CashOutNativeCheque",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "_id",
+						"type": "bytes32"
+					}
+				],
+				"name": "CashOutSwapCheque",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "id",
+						"type": "bytes32"
+					}
+				],
+				"name": "CashOutTokenCheque",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "chequeId",
+						"type": "bytes32"
+					}
+				],
+				"name": "RefundNativeCheque",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "chequeId",
+						"type": "bytes32"
+					}
+				],
+				"name": "RefundMultiCheque",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "id",
+						"type": "bytes32"
+					}
+				],
+				"name": "RefundTokenCheque",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "_id",
+						"type": "bytes32"
+					}
+				],
+				"name": "RefundSwapCheque",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "FEE_DENOMINATOR",
+				"outputs": [
+					{
+						"internalType": "uint256",
+						"name": "",
+						"type": "uint256"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "chequeId",
+						"type": "bytes32"
+					},
+					{
+						"internalType": "address",
+						"name": "tokenAddr",
+						"type": "address"
+					},
+					{
+						"internalType": "uint256",
+						"name": "amount",
+						"type": "uint256"
+					},
+					{
+						"internalType": "address payable[]",
+						"name": "to",
+						"type": "address[]"
+					}
+				],
+				"name": "InitCheque",
+				"outputs": [
+					{
+						"internalType": "bytes32",
+						"name": "",
+						"type": "bytes32"
+					}
+				],
+				"stateMutability": "payable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "chequeId",
+						"type": "bytes32"
+					},
+					{
+						"internalType": "address payable[]",
+						"name": "_to",
+						"type": "address[]"
+					}
+				],
+				"name": "InitMultiCheque",
+				"outputs": [
+					{
+						"internalType": "bytes32",
+						"name": "",
+						"type": "bytes32"
+					}
+				],
+				"stateMutability": "payable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "chequeId",
+						"type": "bytes32"
+					},
+					{
+						"internalType": "address payable",
+						"name": "_to",
+						"type": "address"
+					}
+				],
+				"name": "InitNativeCheque",
+				"outputs": [
+					{
+						"internalType": "bytes32",
+						"name": "",
+						"type": "bytes32"
+					}
+				],
+				"stateMutability": "payable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "chequeId",
+						"type": "bytes32"
+					},
+					{
+						"internalType": "address",
+						"name": "_reciever",
+						"type": "address"
+					},
+					{
+						"internalType": "address",
+						"name": "_tokenIn",
+						"type": "address"
+					},
+					{
+						"internalType": "uint256",
+						"name": "_amountIn",
+						"type": "uint256"
+					},
+					{
+						"internalType": "address",
+						"name": "_tokenOut",
+						"type": "address"
+					},
+					{
+						"internalType": "uint256",
+						"name": "_amountOut",
+						"type": "uint256"
+					}
+				],
+				"name": "InitSwapCheque",
+				"outputs": [
+					{
+						"internalType": "bytes32",
+						"name": "",
+						"type": "bytes32"
+					}
+				],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "chequeId",
+						"type": "bytes32"
+					},
+					{
+						"internalType": "address",
+						"name": "tokenAddr",
+						"type": "address"
+					},
+					{
+						"internalType": "uint256",
+						"name": "amount",
+						"type": "uint256"
+					},
+					{
+						"internalType": "address payable",
+						"name": "to",
+						"type": "address"
+					}
+				],
+				"name": "InitTokenCheque",
+				"outputs": [
+					{
+						"internalType": "bytes32",
+						"name": "",
+						"type": "bytes32"
+					}
+				],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "MAX_BPS",
+				"outputs": [
+					{
+						"internalType": "uint256",
+						"name": "",
+						"type": "uint256"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "MULTI_BPS",
+				"outputs": [
+					{
+						"internalType": "uint256",
+						"name": "",
+						"type": "uint256"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "NATIVE_BPS",
+				"outputs": [
+					{
+						"internalType": "uint256",
+						"name": "",
+						"type": "uint256"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "PER_ADDRESS_FEE",
+				"outputs": [
+					{
+						"internalType": "uint256",
+						"name": "",
+						"type": "uint256"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "SWAP_BPS",
+				"outputs": [
+					{
+						"internalType": "uint256",
+						"name": "",
+						"type": "uint256"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "TOKEN_BPS",
+				"outputs": [
+					{
+						"internalType": "uint256",
+						"name": "",
+						"type": "uint256"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bool",
+						"name": "_active",
+						"type": "bool"
+					}
+				],
+				"name": "activated",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "address",
+						"name": "newOwner",
+						"type": "address"
+					}
+				],
+				"name": "changeOwner",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "collectedFees",
+				"outputs": [
+					{
+						"internalType": "uint256",
+						"name": "",
+						"type": "uint256"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "getBalance",
+				"outputs": [
+					{
+						"internalType": "uint256",
+						"name": "",
+						"type": "uint256"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "getCollectedFee",
+				"outputs": [
+					{
+						"internalType": "uint256",
+						"name": "",
+						"type": "uint256"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "getFeeSchedule",
+				"outputs": [
+					{
+						"internalType": "uint256",
+						"name": "nativeBps",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "multiBps",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "tokenBps",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "swapBps",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "denominator",
+						"type": "uint256"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "id",
+						"type": "bytes32"
+					},
+					{
+						"internalType": "address",
+						"name": "from",
+						"type": "address"
+					}
+				],
+				"name": "getMultiChequeInfo",
+				"outputs": [
+					{
+						"internalType": "uint256",
+						"name": "amount",
+						"type": "uint256"
+					},
+					{
+						"internalType": "address payable[]",
+						"name": "to",
+						"type": "address[]"
+					},
+					{
+						"internalType": "bool",
+						"name": "claimed",
+						"type": "bool"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "id",
+						"type": "bytes32"
+					}
+				],
+				"name": "getNativeChequeInfo",
+				"outputs": [
+					{
+						"internalType": "address payable",
+						"name": "to",
+						"type": "address"
+					},
+					{
+						"internalType": "uint256",
+						"name": "amount",
+						"type": "uint256"
+					},
+					{
+						"internalType": "bool",
+						"name": "claimed",
+						"type": "bool"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "getOwner",
+				"outputs": [
+					{
+						"internalType": "address",
+						"name": "",
+						"type": "address"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "getProtocolStats",
+				"outputs": [
+					{
+						"internalType": "uint256",
+						"name": "balanceWei",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "collectedFeesWei",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "nativeBps",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "multiBps",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "tokenBps",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "swapBps",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "feeDenominator",
+						"type": "uint256"
+					},
+					{
+						"internalType": "address",
+						"name": "treasuryAddress",
+						"type": "address"
+					},
+					{
+						"internalType": "address",
+						"name": "ownerAddress",
+						"type": "address"
+					},
+					{
+						"internalType": "bool",
+						"name": "active",
+						"type": "bool"
+					},
+					{
+						"internalType": "uint256",
+						"name": "nextWithdrawTimestamp",
+						"type": "uint256"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "id",
+						"type": "bytes32"
+					}
+				],
+				"name": "getSwapDetail",
+				"outputs": [
+					{
+						"internalType": "address",
+						"name": "tokenIn",
+						"type": "address"
+					},
+					{
+						"internalType": "uint256",
+						"name": "amountIn",
+						"type": "uint256"
+					},
+					{
+						"internalType": "address",
+						"name": "tokenOut",
+						"type": "address"
+					},
+					{
+						"internalType": "uint256",
+						"name": "amountOut",
+						"type": "uint256"
+					},
+					{
+						"internalType": "address",
+						"name": "spender",
+						"type": "address"
+					},
+					{
+						"internalType": "address",
+						"name": "receiver",
+						"type": "address"
+					},
+					{
+						"internalType": "bool",
+						"name": "claimed",
+						"type": "bool"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "id",
+						"type": "bytes32"
+					}
+				],
+				"name": "getTokenChequeDetail",
+				"outputs": [
+					{
+						"internalType": "address",
+						"name": "spender",
+						"type": "address"
+					},
+					{
+						"internalType": "address",
+						"name": "token",
+						"type": "address"
+					},
+					{
+						"internalType": "uint256",
+						"name": "amount",
+						"type": "uint256"
+					},
+					{
+						"internalType": "address",
+						"name": "receiver",
+						"type": "address"
+					},
+					{
+						"internalType": "bool",
+						"name": "claimed",
+						"type": "bool"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "getTreasery",
+				"outputs": [
+					{
+						"internalType": "address",
+						"name": "",
+						"type": "address"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "isActive",
+				"outputs": [
+					{
+						"internalType": "bool",
+						"name": "",
+						"type": "bool"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "nextAvailableWithdraw",
+				"outputs": [
+					{
+						"internalType": "uint256",
+						"name": "timestamp",
+						"type": "uint256"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "owner",
+				"outputs": [
+					{
+						"internalType": "address",
+						"name": "",
+						"type": "address"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "uint256",
+						"name": "newBps",
+						"type": "uint256"
+					}
+				],
+				"name": "setMultiBps",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "uint256",
+						"name": "newBps",
+						"type": "uint256"
+					}
+				],
+				"name": "setNativeBps",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "uint256",
+						"name": "newBps",
+						"type": "uint256"
+					}
+				],
+				"name": "setSwapBps",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "uint256",
+						"name": "newBps",
+						"type": "uint256"
+					}
+				],
+				"name": "setTokenBps",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "address",
+						"name": "_treaseryAddress",
+						"type": "address"
+					}
+				],
+				"name": "setTreasery",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "bytes32",
+						"name": "",
+						"type": "bytes32"
+					}
+				],
+				"name": "swapCheques",
+				"outputs": [
+					{
+						"internalType": "address",
+						"name": "spender",
+						"type": "address"
+					},
+					{
+						"internalType": "address",
+						"name": "receiver",
+						"type": "address"
+					},
+					{
+						"internalType": "address",
+						"name": "tokenIn",
+						"type": "address"
+					},
+					{
+						"internalType": "uint256",
+						"name": "amountIn",
+						"type": "uint256"
+					},
+					{
+						"internalType": "address",
+						"name": "tokenOut",
+						"type": "address"
+					},
+					{
+						"internalType": "uint256",
+						"name": "amountOut",
+						"type": "uint256"
+					},
+					{
+						"internalType": "bool",
+						"name": "claimed",
+						"type": "bool"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "treasery",
+				"outputs": [
+					{
+						"internalType": "address",
+						"name": "",
+						"type": "address"
+					}
+				],
+				"stateMutability": "view",
+				"type": "function"
+			},
+			{
+				"inputs": [
+					{
+						"internalType": "uint256",
+						"name": "amount",
+						"type": "uint256"
+					},
+					{
+						"internalType": "address",
+						"name": "_to",
+						"type": "address"
+					}
+				],
+				"name": "withdrawAmount",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			},
+			{
+				"inputs": [],
+				"name": "withdrawFees",
+				"outputs": [],
+				"stateMutability": "nonpayable",
+				"type": "function"
+			}
+		]""")
 __SHADOWPAY_ABI__ERC721__ = json.loads("""[]""")
 __SHADOWPAY_ABI__INVOISE__ = json.loads("""[
   {

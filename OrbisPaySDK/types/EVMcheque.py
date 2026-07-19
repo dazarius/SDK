@@ -1,5 +1,5 @@
 import OrbisPaySDK
-from OrbisPaySDK.const import __SHADOWPAY_ABI__ERC20__, __ALLOW_CHAINS__, __SHADOWPAY_CONTRACT_ADDRESS__ERC20__
+from OrbisPaySDK.const import ORBISPAY_CHEQUES_ABI, __ALLOW_CHAINS__, ORBISPAY_CONTRACT_ADDRESS, __NULL_ADDRESS__,CHEQUES_TYPE
 from web3 import Web3
 from typing import Optional
 from eth_utils import keccak
@@ -11,6 +11,31 @@ except ImportError:
     from web3.middleware import geth_poa_middleware as _POAMiddleware  # web3 v5
 
 
+
+MAPS_FUNC = {
+    CHEQUES_TYPE["NativeCheque"]: {
+        "init": "_InitNativeCheque",
+        "cashout": "_CashOutNativeCheque",
+        "info": "getNativeChequeInfo",
+    },
+    CHEQUES_TYPE["MultiCheque"]: {
+        "init": "_InitMultiCheque",
+        "cashout": "_CashOutMultiCheque",
+        "info": "getMultiChequeInfo",
+    },
+    CHEQUES_TYPE["TokenCheque"]: {
+        "init": "_InitTokenCheque",
+        "cashout": "_CashOutTokenCheque",
+        "info": "getTokenChequeDetail",
+    },
+    CHEQUES_TYPE["SwapCheque"]: {
+        "init": "_InitTokenChequeSwap",
+        "cashout": "_CashOutSwapCheque",
+        "info": "getSwapDetail",
+    }
+
+}
+
 def _inject_poa(w3: Web3) -> None:
     """Inject POA middleware if not already present (needed for BSC, Polygon, etc.)."""
     for mw in w3.middleware_onion:
@@ -19,30 +44,40 @@ def _inject_poa(w3: Web3) -> None:
     w3.middleware_onion.inject(_POAMiddleware, layer=0)
 
 class Cheque:
-    def __init__(self, w3: Optional[Web3] = None, private_key: Optional[str] = None, ABI=__SHADOWPAY_ABI__ERC20__, allowed_chains=__ALLOW_CHAINS__, retunrn_build_tx: bool = False, address: Optional[str] = None):
+    def __init__(self, w3=None, private_key=None, ABI=None, allowed_chains=None, retunrn_build_tx=False, address=None, contract_address=None):
+        from OrbisPaySDK.const import ORBISPAY_CHEQUES_ABI, __ALLOW_CHAINS__
         self.w3 = w3
         self.amount = None
         self.token = None
         self.private_key = private_key
-        self.ABI = ABI
+        self.ABI = ABI or ORBISPAY_CHEQUES_ABI
         self.address = address
         self.return_build_tx = retunrn_build_tx
-        self.allowed_chains = allowed_chains
+        self.allowed_chains = allowed_chains or __ALLOW_CHAINS__
+        if contract_address: 
+            self.contract = self.w3.eth.contract(address=contract_address, abi=ABI)
+
         if self.w3 is not None:
             self.__allow__()
 
     @staticmethod
-    def _generate_cheque_id(sender: str, salt: str) -> bytes:
-        raw = f"{sender}:{salt}:{time.time()}".encode("utf-8")
-        return keccak(raw)
+    def generate_cheque_id(cheque_type=None) -> dict:
+        import os
+        from eth_utils import keccak
+        secret = os.urandom(32)
+        digest = bytearray(keccak(secret))
+        
+        return {"secret": secret.hex(), "id": bytes(digest)}
 
     @staticmethod
     def _normalize_cheque_id(cheque_id) -> bytes:
-        """Normalise a user-supplied cheque_id (bytes or hex string) to bytes32."""
+        from web3 import Web3
         if isinstance(cheque_id, bytes):
-            return cheque_id[:32].rjust(32, b"\x00")
+            return cheque_id[:32].rjust(32, b'\x00')
         if isinstance(cheque_id, str):
-            return Web3.to_bytes(hexstr=cheque_id).rjust(32, b"\x00")
+            if cheque_id.startswith("0x"):
+                return Web3.to_bytes(hexstr=cheque_id).rjust(32, b'\x00')
+            return bytes.fromhex(cheque_id).rjust(32, b'\x00')
         raise ValueError("cheque_id must be bytes or a hex string")
 
     def get_id(self, tx):
@@ -57,495 +92,385 @@ class Cheque:
             cheque_id = logs[0]["args"]["id"]
             return cheque_id.hex()
         except Exception as e:
-            print(f"Failed to get cheque ID from transaction receipt: {str(e)}")
+            print(f"Failed to get cheque ID: {str(e)}")
             return False
 
     def __allow__(self):
         _inject_poa(self.w3)
-        print("Checking if chain is allowed", self.w3.eth.chain_id)
         for chain in self.allowed_chains:
             if chain == self.w3.eth.chain_id:
                 self.get_contract_for_chain(chain_id=self.w3.eth.chain_id)
                 return True
-        raise ValueError(f"Chain {str(self.w3.eth.chain_id)} is not allowed. Allowed chains are: {self.allowed_chains}")
+        raise ValueError(f"Chain not allowed: {self.w3.eth.chain_id}")
 
-    def get_contract_for_chain(self, chain_id: str):
+    def get_contract_for_chain(self, chain_id):
+        if self.contract:
+            return self.contract
+        from OrbisPaySDK.const import ORBISPAY_CONTRACT_ADDRESS, ORBISPAY_CHEQUES_ABI
         chain_id = int(chain_id)
-        for key, value in __SHADOWPAY_CONTRACT_ADDRESS__ERC20__.items():
-            print("Checking address", value, "for chain_id", chain_id)
+        for key, value in ORBISPAY_CONTRACT_ADDRESS.items():
             if key == chain_id:
-                contract_address = Web3.to_checksum_address(value)
-                self.contract = self.w3.eth.contract(address=contract_address, abi=__SHADOWPAY_ABI__ERC20__)
+                contract_address = self.w3.to_checksum_address(value)
+                self.contract = self.w3.eth.contract(address=contract_address, abi=ORBISPAY_CHEQUES_ABI)
                 return self.contract
-        raise ValueError(f"Chain {chain_id} is not supported. Supported chains are: {list(__SHADOWPAY_CONTRACT_ADDRESS__ERC20__.keys())}")
+        raise ValueError(f"Chain {chain_id} not supported")
 
     async def get_address(self):
-        if self.address:
-            return self.address
-        elif self.w3:
-            return self.w3.eth.default_account
-        else:
-            raise ValueError("No address provided or Web3 instance is not set")
+        if self.address: return self.address
+        elif self.w3: return self.w3.eth.default_account
+        raise ValueError("No address provided")
 
-    def set_parameters(self, chain_id: Optional[str] = None, w3: Optional[Web3] = None, amount: Optional[int] = None, private_key: Optional[str] = None, token: Optional[str] = None, address: Optional[str] = None, contract: Optional[str] = None, ABI=__SHADOWPAY_ABI__ERC20__):
+    def set_parameters(self, chain_id=None, w3=None, amount=None, private_key=None, token=None, address=None, contract=None, ABI=None):
         if w3:
             self.w3 = w3
             _inject_poa(self.w3)
-            if contract is None:
-                self.get_contract_for_chain(chain_id=chain_id or self.w3.eth.chain_id)
-        if contract:
-            self.contract = self.w3.eth.contract(address=contract, abi=ABI)
-        if amount:
-            self.amount = amount
+            if contract is None: self.get_contract_for_chain(chain_id=chain_id or self.w3.eth.chain_id)
+        if contract: self.contract = self.w3.eth.contract(address=contract, abi=ABI)
+        if amount: self.amount = amount
         if private_key:
             self.private_key = private_key
-            self.address = Web3.to_checksum_address(self.w3.eth.account.from_key(private_key).address)
-        if token:
-            self.token = token
-        if address:
-            self.address = address
+            self.address = self.w3.to_checksum_address(self.w3.eth.account.from_key(private_key).address)
+        if token: self.token = token
+        if address: self.address = address
 
     def __convert__(self):
         return self.w3.to_wei(self.amount, 'ether')
 
-    # ── Native ETH cheque — single recipient ──────────────────────────────────
+    async def _resolve_cheque_type(self, display_id: str) -> str:
+        if ":" in str(display_id):
+            return str(display_id).split(":")[-1]
+        
+        cheque_id_bytes = self._normalize_cheque_id(display_id)
+        code = cheque_id_bytes[31]
+        if code in MAPS_FUNC:
+            return code
+            
+        raise ValueError("Unknown cheque type from ID")
 
-    async def InitNativeCheque(self, amount, receiver: str, private_key: Optional[str] = None, cheque_id=None):
+    def _resolve_cheque_id(self, display_id: str) -> bytes:
+        if ":" in str(display_id):
+            display_id = str(display_id).split(":")[0]
+        return self._normalize_cheque_id(display_id)
+
+    def _with_optional_expiry(self, func_name: str, core_args: list, expire_days: int) -> list:
+        func = self.contract.get_function_by_name(func_name)
+        if len(func.abi['inputs']) > len(core_args):
+            return [*core_args, expire_days]
+        return core_args
+        
+    def _map_outputs(self, func_name, res):
+        func = self.contract.get_function_by_name(func_name)
+        outputs = func.abi['outputs']
+        return {out.get('name') or i: res[i] for i, out in enumerate(outputs)}
+
+    # -- Dispatchers --
+    
+    async def InitCheque(self, amount, to: list, token_address=None, private_key=None, cheque_id=None, expire_days=0, type=None, **kwargs):
+        if not isinstance(to, list) or len(to) == 0: raise ValueError("Recipients required")
+        if type: cheque_type = type
+        elif token_address: cheque_type = CHEQUES_TYPE["TokenCheque"]
+        elif len(to) == 1: cheque_type = CHEQUES_TYPE["NativeCheque"]
+        else: cheque_type = CHEQUES_TYPE["MultiCheque"]
+
+        method = getattr(self, MAPS_FUNC[cheque_type]["init"])
+        if cheque_type == CHEQUES_TYPE["TokenCheque"]:
+            if len(to) != 1: raise ValueError("Token supports a single recipient")
+            return await method(token_address, amount, to[0], private_key, cheque_id, expire_days, **kwargs)
+        if cheque_type == CHEQUES_TYPE["NativeCheque"]:
+            return await method(amount, to[0], private_key, cheque_id, expire_days, **kwargs)
+        if cheque_type == CHEQUES_TYPE["MultiCheque"]:
+            return await method(amount, to, private_key, cheque_id, expire_days, **kwargs)
+
+    async def CashOutCheque(self, display_id: str, private_key=None, **kwargs):
+        cheque_type = await self._resolve_cheque_type(display_id)
+        method = getattr(self, MAPS_FUNC[cheque_type]["cashout"])
+        return await method(display_id, private_key, **kwargs)
+
+    async def RefundCheque(self, display_id: str, private_key=None, **kwargs):
+        cheque_type = await self._resolve_cheque_type(display_id)
+        id_bytes = self._resolve_cheque_id(display_id)
         key = private_key or self.private_key
+        sender = self.w3.eth.account.from_key(key).address
 
-        if key:
-            address = Web3.to_checksum_address(self.w3.eth.account.from_key(key).address)
-        elif self.address:
-            address = Web3.to_checksum_address(self.address)
-        else:
-            raise ValueError("No private key or address provided")
+        if cheque_type == CHEQUES_TYPE["SwapCheque"]:
+            fn = self.contract.functions.RefundSwapCheque(id_bytes)
+        elif cheque_type == CHEQUES_TYPE["NativeCheque"]:
+            fn = self.contract.functions.RefundNativeCheque(id_bytes)
+        elif cheque_type == CHEQUES_TYPE["MultiCheque"]:
+            fn = self.contract.functions.RefundMultiCheque(id_bytes)
+        elif cheque_type == CHEQUES_TYPE["TokenCheque"]:
+            fn = self.contract.functions.RefundTokenCheque(id_bytes)
+        else: raise ValueError("Unknown type")
+        
+        tx_params = {'from': sender, 'nonce': self.w3.eth.get_transaction_count(sender), 'gasPrice': self.w3.eth.gas_price}
+        tx_params['gas'] = fn.estimate_gas(tx_params)
+        tx_params.update(kwargs)
+        txn = fn.build_transaction(tx_params)
+        
+        if self.return_build_tx: return {"tx": txn, "id": display_id}
+        signed_txn = self.w3.eth.account.sign_transaction(txn, key)
+        tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+        if receipt.status != 1: return False
+        return {"tx": tx_hash.hex(), "id": display_id}
 
-        receiver_cs = Web3.to_checksum_address(receiver)
-        cheque_id = self._normalize_cheque_id(cheque_id) if cheque_id else self._generate_cheque_id(address, f"{receiver_cs}:{amount}")
+    async def ExtendCheque(self, display_id: str, additional_days: int, private_key=None, **kwargs):
+        cheque_type = await self._resolve_cheque_type(display_id)
+        id_bytes = self._resolve_cheque_id(display_id)
+        key = private_key or self.private_key
+        sender = self.w3.eth.account.from_key(key).address
+
+        if cheque_type == CHEQUES_TYPE["SwapCheque"]: fn = self.contract.functions.ExtendSwapCheque(id_bytes, additional_days)
+        elif cheque_type == CHEQUES_TYPE["NativeCheque"]: fn = self.contract.functions.ExtendNativeCheque(id_bytes, additional_days)
+        elif cheque_type == CHEQUES_TYPE["MultiCheque"]: fn = self.contract.functions.ExtendMultiCheque(id_bytes, additional_days)
+        elif cheque_type == CHEQUES_TYPE["TokenCheque"]: fn = self.contract.functions.ExtendTokenCheque(id_bytes, additional_days)
+        else: raise ValueError("Unknown type")
+        
+        tx_params = {'from': sender, 'nonce': self.w3.eth.get_transaction_count(sender), 'gasPrice': self.w3.eth.gas_price}
+        tx_params['gas'] = fn.estimate_gas(tx_params)
+        tx_params.update(kwargs)
+        txn = fn.build_transaction(tx_params)
+        
+        if self.return_build_tx: return {"tx": txn, "id": display_id}
+        signed_txn = self.w3.eth.account.sign_transaction(txn, key)
+        tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+        if receipt.status != 1: return False
+        return {"tx": tx_hash.hex(), "id": display_id}
+
+    # -- Implementations --
+
+    async def _InitNativeCheque(self, amount, receiver, private_key=None, cheque_id=None, expire_days=0, **kwargs):
+        key = private_key or self.private_key
+        address = self.w3.to_checksum_address(self.w3.eth.account.from_key(key).address)
+        rec_cs = self.w3.to_checksum_address(receiver)
+        
+        cd = self.generate_cheque_id(CHEQUES_TYPE["NativeCheque"]) if not cheque_id else {"id": self._normalize_cheque_id(cheque_id), "secret": None}
+        args = self._with_optional_expiry("InitNativeCheque", [cd["id"], rec_cs], expire_days)
         value_wei = self.w3.to_wei(amount, 'ether')
 
-        estimated_gas = self.contract.functions.InitNativeCheque(
-            cheque_id, receiver_cs
-        ).estimate_gas({
-            'from': address,
-            'value': value_wei,
-            'gasPrice': self.w3.eth.gas_price,
-        })
-        txn = self.contract.functions.InitNativeCheque(
-            cheque_id, receiver_cs
-        ).build_transaction({
-            'from': address,
-            'value': value_wei,
-            'nonce': self.w3.eth.get_transaction_count(address),
-            'gas': estimated_gas,
-            'gasPrice': self.w3.eth.gas_price,
-            'chainId': self.w3.eth.chain_id,
-        })
-        if self.return_build_tx:
-            return {"tx": txn, "id": cheque_id.hex()}
+        tx_params = {'from': address, 'value': value_wei, 'nonce': self.w3.eth.get_transaction_count(address), 'gasPrice': self.w3.eth.gas_price}
+        tx_params['gas'] = self.contract.functions.InitNativeCheque(*args).estimate_gas(tx_params)
+        tx_params.update(kwargs)
+        txn = self.contract.functions.InitNativeCheque(*args).build_transaction(tx_params)
 
-        signed_txn = self.w3.eth.account.sign_transaction(txn, key)
-        txn_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
-        txn_receipt = self.w3.eth.wait_for_transaction_receipt(txn_hash)
-        if txn_receipt.status != 1:
-            return False
-        return {"tx": txn_hash.hex(), "id": cheque_id.hex()}
-
-    async def CashOutNativeCheque(self, cheque_id: str, private_key: Optional[str] = None):
-        key = private_key or self.private_key
-        account = self.w3.eth.account.from_key(key)
-        sender_address = account.address
-
-        nonce = self.w3.eth.get_transaction_count(sender_address)
-        latest_block = self.w3.eth.get_block('latest')
-        supports_eip1559 = 'baseFeePerGas' in latest_block
-
-        tx_common = {
-            'from': sender_address,
-            'nonce': nonce,
-            'gas': 100_000,
-        }
-        if supports_eip1559:
-            base_fee = latest_block['baseFeePerGas']
-            priority_fee = self.w3.to_wei(2, 'gwei')
-            tx_common.update({
-                'maxFeePerGas': base_fee + priority_fee * 2,
-                'maxPriorityFeePerGas': priority_fee,
-            })
-        else:
-            tx_common.update({'gasPrice': self.w3.to_wei('5', 'gwei')})
-
-        txn = self.contract.functions.CashOutNativeCheque(
-            Web3.to_bytes(hexstr=cheque_id)
-        ).build_transaction(tx_common)
-
-        if self.return_build_tx:
-            return {"tx": txn, "id": cheque_id}
-
+        if self.return_build_tx: return {"tx": txn, **cd, "type": CHEQUES_TYPE["NativeCheque"]}
         signed_txn = self.w3.eth.account.sign_transaction(txn, key)
         tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
-        if receipt.status != 1:
-            return False
-        return {"tx": tx_hash.hex(), "id": cheque_id}
+        if receipt.status != 1: return False
+        return {"tx": tx_hash.hex(), "id": cd["id"].hex(), "secret": cd["secret"], "type": CHEQUES_TYPE["NativeCheque"]}
 
-    # ── Native ETH cheque — multi recipient ───────────────────────────────────
-
-    async def InitMultiCheque(self, amount, receivers: list, private_key: Optional[str] = None, cheque_id=None):
-        if not isinstance(receivers, list) or len(receivers) == 0:
-            raise ValueError("Receivers must be a non-empty list of addresses")
-
+    async def _CashOutNativeCheque(self, display_id, private_key=None, **kwargs):
         key = private_key or self.private_key
+        sender = self.w3.eth.account.from_key(key).address
+        id_bytes = self._resolve_cheque_id(display_id)
 
-        if key:
-            address = Web3.to_checksum_address(self.w3.eth.account.from_key(key).address)
-        elif self.address:
-            address = Web3.to_checksum_address(self.address)
-        else:
-            raise ValueError("No private key or address provided")
+        tx_params = {'from': sender, 'nonce': self.w3.eth.get_transaction_count(sender), 'gasPrice': self.w3.eth.gas_price}
+        tx_params['gas'] = self.contract.functions.CashOutNativeCheque(id_bytes).estimate_gas(tx_params)
+        tx_params.update(kwargs)
+        txn = self.contract.functions.CashOutNativeCheque(id_bytes).build_transaction(tx_params)
 
-        receivers_cs = [Web3.to_checksum_address(addr) for addr in receivers]
-        cheque_id = self._normalize_cheque_id(cheque_id) if cheque_id else self._generate_cheque_id(address, f"{receivers_cs}:{amount}")
+        if self.return_build_tx: return {"tx": txn, "id": display_id}
+        signed_txn = self.w3.eth.account.sign_transaction(txn, key)
+        tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+        if receipt.status != 1: return False
+        return {"tx": tx_hash.hex(), "id": display_id}
+
+    async def _InitMultiCheque(self, amount, receivers, private_key=None, cheque_id=None, expire_days=0, **kwargs):
+        key = private_key or self.private_key
+        address = self.w3.to_checksum_address(self.w3.eth.account.from_key(key).address)
+        rec_cs = [self.w3.to_checksum_address(r) for r in receivers]
+        
+        cd = self.generate_cheque_id(CHEQUES_TYPE["MultiCheque"]) if not cheque_id else {"id": self._normalize_cheque_id(cheque_id), "secret": None}
+        args = self._with_optional_expiry("InitMultiCheque", [cd["id"], rec_cs], expire_days)
         value_wei = self.w3.to_wei(amount, 'ether')
 
-        estimated_gas = self.contract.functions.InitMultiCheque(
-            cheque_id, receivers_cs
-        ).estimate_gas({
-            'from': address,
-            'value': value_wei,
-            'gasPrice': self.w3.eth.gas_price,
-        })
-        txn = self.contract.functions.InitMultiCheque(
-            cheque_id, receivers_cs
-        ).build_transaction({
-            'from': address,
-            'value': value_wei,
-            'nonce': self.w3.eth.get_transaction_count(address),
-            'gas': estimated_gas,
-            'gasPrice': self.w3.eth.gas_price,
-            'chainId': self.w3.eth.chain_id,
-        })
-        if self.return_build_tx:
-            return {"tx": txn, "id": cheque_id.hex()}
+        tx_params = {'from': address, 'value': value_wei, 'nonce': self.w3.eth.get_transaction_count(address), 'gasPrice': self.w3.eth.gas_price}
+        tx_params['gas'] = self.contract.functions.InitMultiCheque(*args).estimate_gas(tx_params)
+        tx_params.update(kwargs)
+        txn = self.contract.functions.InitMultiCheque(*args).build_transaction(tx_params)
 
+        if self.return_build_tx: return {"tx": txn, **cd, "type": CHEQUES_TYPE["MultiCheque"]}
         signed_txn = self.w3.eth.account.sign_transaction(txn, key)
-        txn_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
-        txn_receipt = self.w3.eth.wait_for_transaction_receipt(txn_hash)
-        if txn_receipt.status != 1:
-            return False
-        return {"tx": txn_hash.hex(), "id": cheque_id.hex()}
-
-    async def CashOutMultiCheque(self, cheque_id: str, private_key: str = None):
-        if not private_key:
-            private_key = self.private_key
-
-        account = self.w3.eth.account.from_key(private_key)
-        sender_address = account.address or self.address
-        nonce = self.w3.eth.get_transaction_count(sender_address)
-
-        latest_block = self.w3.eth.get_block('latest')
-        supports_eip1559 = 'baseFeePerGas' in latest_block
-
-        tx_common = {
-            'from': sender_address,
-            'nonce': nonce,
-            'gas': 300_000,
-        }
-
-        if supports_eip1559:
-            base_fee = latest_block['baseFeePerGas']
-            priority_fee = self.w3.to_wei(2, 'gwei')
-            tx_common.update({
-                'maxFeePerGas': base_fee + priority_fee * 2,
-                'maxPriorityFeePerGas': priority_fee,
-            })
-        else:
-            tx_common.update({'gasPrice': self.w3.to_wei('5', 'gwei')})
-
-        txn = self.contract.functions.CashOutMultiCheque(
-            Web3.to_bytes(hexstr=cheque_id)
-        ).build_transaction(tx_common)
-
-        if self.return_build_tx:
-            return {"tx": txn, "id": cheque_id}
-
-        signed_txn = self.w3.eth.account.sign_transaction(txn, private_key=private_key)
         tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
-        if receipt.status != 1:
-            return False
-        return {"tx": tx_hash.hex(), "id": cheque_id}
+        if receipt.status != 1: return False
+        return {"tx": tx_hash.hex(), "id": cd["id"].hex(), "secret": cd["secret"], "type": CHEQUES_TYPE["MultiCheque"]}
 
-    # ── ERC-20 token cheque ────────────────────────────────────────────────────
-
-    async def InitTokenCheque(self, token_address: str, amount, receiver: str, private_key: Optional[str] = None, cheque_id=None):
+    async def _CashOutMultiCheque(self, display_id, private_key=None, **kwargs):
         key = private_key or self.private_key
+        sender = self.w3.eth.account.from_key(key).address
+        id_bytes = self._resolve_cheque_id(display_id)
 
-        if key:
-            address = Web3.to_checksum_address(self.w3.eth.account.from_key(key).address)
-        elif self.address:
-            address = Web3.to_checksum_address(self.address)
-        else:
-            raise ValueError("No private key or address provided")
+        tx_params = {'from': sender, 'nonce': self.w3.eth.get_transaction_count(sender), 'gasPrice': self.w3.eth.gas_price}
+        tx_params['gas'] = self.contract.functions.CashOutMultiCheque(id_bytes).estimate_gas(tx_params)
+        tx_params.update(kwargs)
+        txn = self.contract.functions.CashOutMultiCheque(id_bytes).build_transaction(tx_params)
 
-        token_cs = Web3.to_checksum_address(token_address)
-        receiver_cs = Web3.to_checksum_address(receiver)
-        cheque_id = self._normalize_cheque_id(cheque_id) if cheque_id else self._generate_cheque_id(address, f"{token_cs}:{amount}:{receiver_cs}")
-
-        erc20 = OrbisPaySDK.ERC20Token(w3=self.w3, build_tx=True)
-        erc20.set_params(token_address=token_cs)
-        current_allowance = erc20.allowance(spender=self.contract.address, owner=address)
-        if current_allowance < amount:
-            approve = erc20.approve(
-                spender=self.contract.address,
-                amount=amount,
-                private_key=key,
-                conveted_amount=False,
-            )
-            if approve:
-                return {"need_approve": approve}
-
-        estimated_gas = self.contract.functions.InitTokenCheque(
-            cheque_id, token_cs, amount, receiver_cs
-        ).estimate_gas({
-            'from': address,
-            'gasPrice': self.w3.eth.gas_price,
-        })
-        txn = self.contract.functions.InitTokenCheque(
-            cheque_id, token_cs, amount, receiver_cs
-        ).build_transaction({
-            'from': address,
-            'nonce': self.w3.eth.get_transaction_count(address),
-            'gas': estimated_gas,
-            'gasPrice': self.w3.eth.gas_price,
-        })
-        if self.return_build_tx:
-            return {"tx": txn, "id": cheque_id.hex()}
-
+        if self.return_build_tx: return {"tx": txn, "id": display_id}
         signed_txn = self.w3.eth.account.sign_transaction(txn, key)
-        txn_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
-        txn_receipt = self.w3.eth.wait_for_transaction_receipt(txn_hash)
-        if txn_receipt.status != 1:
-            return False
-        return {"tx": txn_hash.hex(), "id": cheque_id.hex()}
-
-    async def CashOutTokenCheque(self, cheque_id: str, private_key: Optional[str] = None):
-        if private_key is None:
-            private_key = self.private_key
-
-        account = self.w3.eth.account.from_key(private_key)
-        sender_address = account.address or self.address
-
-        estimated_gas = self.contract.functions.CashOutTokenCheque(
-            Web3.to_bytes(hexstr=cheque_id)
-        ).estimate_gas({
-            'from': sender_address,
-            'gasPrice': self.w3.eth.gas_price,
-        })
-        txn = self.contract.functions.CashOutTokenCheque(
-            Web3.to_bytes(hexstr=cheque_id)
-        ).build_transaction({
-            'from': sender_address,
-            'nonce': self.w3.eth.get_transaction_count(sender_address),
-            'gas': estimated_gas,
-            'gasPrice': self.w3.eth.gas_price,
-        })
-        if self.return_build_tx:
-            return {"tx": txn, "id": cheque_id}
-
-        signed_txn = self.w3.eth.account.sign_transaction(txn, private_key=private_key)
         tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
-        if receipt.status != 1:
-            return False
-        return {"tx": tx_hash.hex(), "id": cheque_id}
+        if receipt.status != 1: return False
+        return {"tx": tx_hash.hex(), "id": display_id}
 
-    # ── Swap cheque ────────────────────────────────────────────────────────────
-
-    async def InitTokenChequeSwap(self, token_in: str, amount_in, token_out: str, amount_out, receiver: str, private_key: Optional[str] = None, cheque_id=None):
+    async def _InitTokenCheque(self, token_address, amount, receiver, private_key=None, cheque_id=None, expire_days=0, **kwargs):
         key = private_key or self.private_key
-        if key:
-            address = Web3.to_checksum_address(self.w3.eth.account.from_key(key).address)
-        elif self.address:
-            address = Web3.to_checksum_address(self.address)
-        else:
-            raise ValueError("No private key or address provided")
+        address = self.w3.to_checksum_address(self.w3.eth.account.from_key(key).address)
+        tok_cs = self.w3.to_checksum_address(token_address)
+        rec_cs = self.w3.to_checksum_address(receiver)
 
-        token_in_cs = Web3.to_checksum_address(token_in)
-        token_out_cs = Web3.to_checksum_address(token_out)
-        receiver_cs = Web3.to_checksum_address(receiver)
-        cheque_id = self._normalize_cheque_id(cheque_id) if cheque_id else self._generate_cheque_id(address, f"{token_in_cs}:{amount_in}:{token_out_cs}:{amount_out}:{receiver_cs}")
+        cd = self.generate_cheque_id(CHEQUES_TYPE["TokenCheque"]) if not cheque_id else {"id": self._normalize_cheque_id(cheque_id), "secret": None}
+        args = self._with_optional_expiry("InitTokenCheque", [cd["id"], tok_cs, amount, rec_cs], expire_days)
 
+        import OrbisPaySDK
         erc20 = OrbisPaySDK.ERC20Token(w3=self.w3)
-        erc20.set_params(token_address=token_in_cs)
-        current_allowance = erc20.allowance(spender=self.contract.address, owner=address)
-        if current_allowance < amount_in:
-            approve = erc20.approve(
-                spender=self.contract.address,
-                amount=amount_in,
-                private_key=key,
-                conveted_amount=False,
-            )
-            if not approve:
-                return False
+        erc20.set_params(token_address=tok_cs)
+        if erc20.allowance(spender=self.contract.address, owner=address) < amount:
+            approve = erc20.approve(spender=self.contract.address, amount=amount, private_key=key, conveted_amount=False)
+            if approve: return {"need_approve": approve}
 
-        estimated_gas = self.contract.functions.InitSwapCheque(
-            cheque_id, receiver_cs, token_in_cs, amount_in, token_out_cs, amount_out
-        ).estimate_gas({
-            'from': address,
-            'gasPrice': self.w3.eth.gas_price,
-        })
-        txn = self.contract.functions.InitSwapCheque(
-            cheque_id, receiver_cs, token_in_cs, amount_in, token_out_cs, amount_out
-        ).build_transaction({
-            'from': address,
-            'nonce': self.w3.eth.get_transaction_count(address),
-            'gas': estimated_gas,
-            'gasPrice': self.w3.eth.gas_price,
-        })
-        if self.return_build_tx:
-            return {"tx": txn, "id": cheque_id.hex()}
+        tx_params = {'from': address, 'nonce': self.w3.eth.get_transaction_count(address), 'gasPrice': self.w3.eth.gas_price}
+        tx_params['gas'] = self.contract.functions.InitTokenCheque(*args).estimate_gas(tx_params)
+        tx_params.update(kwargs)
+        txn = self.contract.functions.InitTokenCheque(*args).build_transaction(tx_params)
 
+        if self.return_build_tx: return {"tx": txn, **cd, "type": CHEQUES_TYPE["TokenCheque"]}
         signed_txn = self.w3.eth.account.sign_transaction(txn, key)
-        txn_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
-        txn_receipt = self.w3.eth.wait_for_transaction_receipt(txn_hash)
-        if txn_receipt.status != 1:
-            return False
-        return {"tx": txn_hash.hex(), "id": cheque_id.hex()}
+        tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+        if receipt.status != 1: return False
+        return {"tx": tx_hash.hex(), "id": cd["id"].hex(), "secret": cd["secret"], "type": CHEQUES_TYPE["TokenCheque"]}
 
-    async def CashOutSwapCheque(self, cheque_id: str, private_key: Optional[str] = None):
-        if private_key is None:
-            private_key = self.private_key
+    async def _CashOutTokenCheque(self, display_id, private_key=None, **kwargs):
+        key = private_key or self.private_key
+        sender = self.w3.eth.account.from_key(key).address
+        id_bytes = self._resolve_cheque_id(display_id)
 
-        swap_detail = await self.getSwapDetail(cheque_id)
-        token_out = swap_detail["tokenOut"]
-        amount_out = swap_detail["amountOut"]
+        tx_params = {'from': sender, 'nonce': self.w3.eth.get_transaction_count(sender), 'gasPrice': self.w3.eth.gas_price}
+        tx_params['gas'] = self.contract.functions.CashOutTokenCheque(id_bytes).estimate_gas(tx_params)
+        tx_params.update(kwargs)
+        txn = self.contract.functions.CashOutTokenCheque(id_bytes).build_transaction(tx_params)
 
+        if self.return_build_tx: return {"tx": txn, "id": display_id}
+        signed_txn = self.w3.eth.account.sign_transaction(txn, key)
+        tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+        if receipt.status != 1: return False
+        return {"tx": tx_hash.hex(), "id": display_id}
+
+    async def _InitTokenChequeSwap(self, token_in, amount_in, token_out, amount_out, receiver, private_key=None, cheque_id=None, expire_days=0, **kwargs):
+        key = private_key or self.private_key
+        address = self.w3.to_checksum_address(self.w3.eth.account.from_key(key).address)
+        ti_cs = self.w3.to_checksum_address(token_in)
+        to_cs = self.w3.to_checksum_address(token_out)
+        rec_cs = self.w3.to_checksum_address(receiver)
+
+        cd = self.generate_cheque_id(CHEQUES_TYPE["SwapCheque"]) if not cheque_id else {"id": self._normalize_cheque_id(cheque_id), "secret": None}
+        args = self._with_optional_expiry("InitSwapCheque", [cd["id"], rec_cs, ti_cs, amount_in, to_cs, amount_out], expire_days)
+
+        import OrbisPaySDK
+        erc20 = OrbisPaySDK.ERC20Token(w3=self.w3)
+        erc20.set_params(token_address=ti_cs)
+        if erc20.allowance(spender=self.contract.address, owner=address) < amount_in:
+            approve = erc20.approve(spender=self.contract.address, amount=amount_in, private_key=key, conveted_amount=False)
+            if not approve: return False
+
+        tx_params = {'from': address, 'nonce': self.w3.eth.get_transaction_count(address), 'gasPrice': self.w3.eth.gas_price}
+        tx_params['gas'] = self.contract.functions.InitSwapCheque(*args).estimate_gas(tx_params)
+        tx_params.update(kwargs)
+        txn = self.contract.functions.InitSwapCheque(*args).build_transaction(tx_params)
+
+        if self.return_build_tx: return {"tx": txn, **cd, "type": CHEQUES_TYPE["SwapCheque"]}
+        signed_txn = self.w3.eth.account.sign_transaction(txn, key)
+        tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+        if receipt.status != 1: return False
+        return {"tx": tx_hash.hex(), "id": cd["id"].hex(), "secret": cd["secret"], "type": CHEQUES_TYPE["SwapCheque"]}
+
+    async def _CashOutSwapCheque(self, secret: str, private_key=None, **kwargs):
+        # Swap cashout requires the raw secret, not the hash.
+        # So we hash it first to get the info, then pass the secret.
+        key = private_key or self.private_key
+        sender = self.w3.eth.account.from_key(key).address
+        
+        from eth_utils import keccak
+        secret_bytes = bytes.fromhex(secret) if secret.startswith("0x") else bytes.fromhex(secret)
+        hashed_id = bytes(keccak(secret_bytes))
+        swap_detail = await self.getSwapDetail(hashed_id)
+        
+        amount_out = swap_detail.get("amountOut", 0)
+        from OrbisPaySDK.const import __NULL_ADDRESS__
+        token_out = swap_detail.get("tokenOut", __NULL_ADDRESS__)
+        
+        import OrbisPaySDK
         erc20 = OrbisPaySDK.ERC20Token(w3=self.w3)
         erc20.set_params(token_address=token_out)
-        current_allowance = erc20.allowance(spender=self.contract.address, owner=self.address)
-        if current_allowance < amount_out:
-            approve = erc20.approve(
-                spender=self.contract.address,
-                amount=amount_out,
-                private_key=private_key,
-                conveted_amount=False,
-            )
-            if not approve:
-                return False
+        if erc20.allowance(spender=self.contract.address, owner=sender) < amount_out:
+            approve = erc20.approve(spender=self.contract.address, amount=amount_out, private_key=key, conveted_amount=False)
+            if approve: return {"need_approve": approve, "id": hashed_id.hex()}
 
-        sender = self.w3.eth.account.from_key(private_key).address
-        estimated_gas = self.contract.functions.CashOutSwapCheque(
-            Web3.to_bytes(hexstr=cheque_id)
-        ).estimate_gas({
-            'from': sender,
-            'gasPrice': self.w3.eth.gas_price,
-        })
-        swa = self.contract.functions.CashOutSwapCheque(
-            Web3.to_bytes(hexstr=cheque_id)
-        ).build_transaction({
-            'from': sender,
-            'nonce': self.w3.eth.get_transaction_count(sender),
-            'gas': estimated_gas,
-            'gasPrice': self.w3.eth.gas_price,
-        })
-        if self.return_build_tx:
-            return {"tx": swa, "id": cheque_id}
+        id_bytes = secret_bytes[:32].rjust(32, b'\x00') # passed directly
+        tx_params = {'from': sender, 'nonce': self.w3.eth.get_transaction_count(sender), 'gasPrice': self.w3.eth.gas_price}
+        tx_params['gas'] = self.contract.functions.CashOutSwapCheque(id_bytes).estimate_gas(tx_params)
+        tx_params.update(kwargs)
+        txn = self.contract.functions.CashOutSwapCheque(id_bytes).build_transaction(tx_params)
 
-        signed_txn = self.w3.eth.account.sign_transaction(swa, private_key=private_key)
+        if self.return_build_tx: return {"tx": txn, "id": hashed_id.hex()}
+        signed_txn = self.w3.eth.account.sign_transaction(txn, key)
         tx_hash = self.w3.eth.send_raw_transaction(signed_txn.raw_transaction)
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
-        if receipt.status != 1:
-            return False
-        return {"tx": tx_hash.hex(), "id": cheque_id}
+        if receipt.status != 1: return False
+        return {"tx": tx_hash.hex(), "id": hashed_id.hex()}
 
-    # ── Read functions ─────────────────────────────────────────────────────────
-
-    async def getComunityPool(self):
-        return self.contract.functions.getCollectedFee().call()
-
-    async def getBalance(self):
-        return self.contract.functions.getBalance().call()
-
-    async def getOwner(self):
-        return self.contract.functions.getOwner().call()
-
-    async def getTreasery(self):
-        return self.contract.functions.getTreasery().call()
+    # -- Read Methods --
 
     async def getProtocolStats(self):
         s = self.contract.functions.getProtocolStats().call()
-        return {
-            "balance": s[0],
-            "collectedFees": s[1],
-            "feeBps": s[2],
-            "feeDenominator": s[3],
-            "treasury": s[4],
-            "owner": s[5],
-            "active": s[6],
-            "nextWithdraw": s[7],
-        }
-
-    async def nextAvailableWithdraw(self):
-        return self.contract.functions.nextAvailableWithdraw().call()
+        return self._map_outputs("getProtocolStats", s)
 
     async def getNativeChequeInfo(self, cheque_id: str):
-        if not cheque_id:
-            raise ValueError("Cheque ID is required")
-        cheque_id_bytes32 = Web3.to_bytes(hexstr=cheque_id).rjust(32, b'\x00')
-        info = self.contract.functions.getNativeChequeInfo(cheque_id_bytes32).call()
-        return {
-            "to": info[0],
-            "amount": info[1],
-            "claimed": info[2],
-        }
+        id_bytes = self._resolve_cheque_id(cheque_id)
+        info = self.contract.functions.getNativeChequeInfo(id_bytes).call()
+        return self._map_outputs("getNativeChequeInfo", info)
 
-    async def getMultiChequeInfo(self, cheque_id: str, address: Optional[str] = None):
-        if not cheque_id:
-            raise ValueError("Cheque ID is required")
-
-        addr = Web3.to_checksum_address(address) if address else self.address
-        cheque_id_bytes32 = Web3.to_bytes(hexstr=cheque_id).rjust(32, b'\x00')
-        info = self.contract.functions.getMultiChequeInfo(cheque_id_bytes32, addr).call()
-        return {
-            "amount": info[0],
-            "receivers": info[1],
-            "claimed": info[2],
-        }
+    async def getMultiChequeInfo(self, cheque_id: str, address=None):
+        addr = self.w3.to_checksum_address(address) if address else self.address
+        id_bytes = self._resolve_cheque_id(cheque_id)
+        info = self.contract.functions.getMultiChequeInfo(id_bytes, addr).call()
+        return self._map_outputs("getMultiChequeInfo", info)
 
     async def getTokenChequeInfo(self, cheque_id: str):
-        if not cheque_id:
-            raise ValueError("Cheque ID is required")
-        cheque_id_bytes32 = Web3.to_bytes(hexstr=cheque_id).rjust(32, b'\x00')
-        cheque_info = self.contract.functions.getTokenChequeDetail(cheque_id_bytes32).call()
-        return {
-            "sender": cheque_info[0],
-            "token": cheque_info[1],
-            "amount": cheque_info[2],
-            "receiver": cheque_info[3],
-            "claimed": cheque_info[4],
-        }
+        id_bytes = self._resolve_cheque_id(cheque_id)
+        # Handle ABI name differences (detail vs info)
+        try:
+            info = self.contract.functions.getTokenChequeDetail(id_bytes).call()
+            return self._map_outputs("getTokenChequeDetail", info)
+        except:
+            info = self.contract.functions.getTokenChequeInfo(id_bytes).call()
+            return self._map_outputs("getTokenChequeInfo", info)
 
     async def getSwapDetail(self, cheque_id: str):
-        cheque_id_bytes32 = Web3.to_bytes(hexstr=cheque_id).rjust(32, b'\x00')
-        s = self.contract.functions.getSwapDetail(cheque_id_bytes32).call()
-        return {
-            "tokenIn": s[0],
-            "amountIn": s[1],
-            "tokenOut": s[2],
-            "amountOut": s[3],
-            "spender": s[4],
-            "receiver": s[5],
-            "claimed": s[6],
-        }
+        id_bytes = self._resolve_cheque_id(cheque_id)
+        s = self.contract.functions.getSwapDetail(id_bytes).call()
+        return self._map_outputs("getSwapDetail", s)
 
     async def getFees(self):
-        feesData = self.contract.functions.getFeeData().call()
-        return {
-            "bps": feesData[0],
-            "FEE_DENOMINATOR": feesData[1],
-        }
+        try:
+            f = self.contract.functions.getFee().call()
+            return self._map_outputs("getFee", f)
+        except:
+            # Fallback for old ABI
+            f = self.contract.functions.getFeeSchedule().call()
+            return {"nativeBps": f[0], "multiBps": f[1], "tokenBps": f[2], "swapBps": f[3], "denominator": f[4]}
 
+    async def getComunityPool(self): return self.contract.functions.getCollectedFee().call()
+    async def getBalance(self): return self.contract.functions.getBalance().call()
+    async def getOwner(self): return self.contract.functions.getOwner().call()
+    async def getTreasery(self): return self.contract.functions.getTreasery().call()
+    async def nextAvailableWithdraw(self): return self.contract.functions.nextAvailableWithdraw().call()
 
 class NFTcheque:
     def __init__(self, w3: Web3, token: str, amount: int, spender: str):

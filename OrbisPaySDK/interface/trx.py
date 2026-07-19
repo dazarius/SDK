@@ -141,7 +141,7 @@ class TRX:
     def set_private_key(self, private_key: str):
         """
         Sets the private key used for signing transactions.
-        Also derives and stores the corresponding wallet address.
+        Also derives and stores the corresponding wallet address (only if not already set via set_address).
 
         Args:
             private_key (str | PrivateKey): Hex string (64 chars) or PrivateKey instance.
@@ -155,7 +155,18 @@ class TRX:
             self.private_key = private_key
         else:
             raise ValueError("private_key must be a hex string or PrivateKey instance.")
-        self.address = self.private_key.public_key.to_base58check_address()
+        if not self.address:
+            self.address = self.private_key.public_key.to_base58check_address()
+
+    def set_address(self, address: str):
+        """
+        Sets the wallet address explicitly without requiring a private key.
+        Takes priority over the address derived from the private key.
+
+        Args:
+            address (str): Base58check TRON address (starts with T).
+        """
+        self.address = address
 
     def set_params(
         self,
@@ -297,18 +308,21 @@ class TRX:
         Returns:
             dict with tx hash and status.
         """
-        key = self._resolve_key(private_key)
-        from_addr = key.public_key.to_base58check_address()
-        amount_sun = int(amount * SUN_PER_TRX)
+        key = None
+        if self.address is None:
+            key = self._resolve_key(private_key)
+            self.address = key.public_key.to_base58check_address()
+        from_addr = self.address
+        amount_sun = amount
 
         txn = (
             self.client.trx.transfer(from_addr, to, amount_sun)
             .build()
-            .sign(key)
         )
 
         if self.build_tx:
             return {"tx": txn}
+        txn.sign(key)
 
         result = txn.broadcast()
 
@@ -344,7 +358,7 @@ class TRX:
             dict with tx hash and status.
         """
         key = self._resolve_key(private_key)
-        from_addr = key.public_key.to_base58check_address()
+        from_addr = self.address or key.public_key.to_base58check_address()
 
         contract = self.client.get_contract(contract_address)
 
@@ -448,7 +462,7 @@ class TRX:
                     "amount": int, "raw_result": dict }
         """
         key = self._resolve_key(private_key)
-        from_addr = key.public_key.to_base58check_address()
+        from_addr = self.address or key.public_key.to_base58check_address()
 
         contract = self.client.get_contract(contract_address)
 

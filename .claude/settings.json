@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /home/dazay/Desktop/OrbisPayClean log --oneline origin/main)",
+      "Bash(git -C /home/dazay/Desktop/OrbisPayClean add OrbisPaySDK/interface/socials/__init__.py OrbisPaySDK/__init__.py)",
+      "Bash(git -C /home/dazay/Desktop/OrbisPayClean commit -m ' *)",
+      "Bash(git -C /home/dazay/Desktop/OrbisPayClean add OrbisPaySDK/const.py OrbisPaySDK/interface/sol.py OrbisPaySDK/interface/ton.py OrbisPaySDK/interface/trx.py OrbisPaySDK/types/EVMcheque.py OrbisPaySDK/types/TONcheque.py OrbisPaySDK/utils/utils.py)",
+      "Bash(git -C /home/dazay/Desktop/OrbisPayClean diff --cached --stat)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3)",
+      "Bash(npm -v)",
+      "Bash(mkdir -p /home/dazay/Desktop/OrbisPayClean/js-sdk/src)",
+      "Bash(npm install *)",
+      "Bash(node -e ' *)"
+    ],
+    "additionalDirectories": [
+      "/home/dazay/Desktop/OrbisPayClean/js-sdk"
+    ]
+  }
+}

@@ -155,7 +155,7 @@ class TON:
             self.set_wallet(mnemonics, self.wallet_version)
 
     @staticmethod
-    def gen_wallet(version: str = "wr5") -> dict:
+    def gen_wallet(version: str = "v3r1") -> dict:
         """
         Generates a new random TON wallet.
 
@@ -171,7 +171,7 @@ class TON:
                 "key":       bytes,        # private key bytes (legacy versions only)
             }
         """
-        client = ToncenterV3Client()
+        
         version_map = {
             "v3r1": WalletVersionEnum.v3r1,
             "v3r2": WalletVersionEnum.v3r2,
@@ -179,7 +179,7 @@ class TON:
         }
 
         if version == "wr5":
-            wallet_v5, pub_k, priv_k, mnemonics = WalletV5R1.create(client=client)
+            wallet_v5, pub_k, priv_k, mnemonics = WalletV5R1.create(client=None)
             return {
                 "mnemonics": mnemonics,
                 "address": wallet_v5.address.to_str(True, True, False),
@@ -189,16 +189,12 @@ class TON:
 
         wv = version_map.get(version, WalletVersionEnum.v4r2)
         mnemonics, pub_k, priv_k, wallet = Wallets.create(version=wv, workchain=0)
-        wallet_v5, _pub_k, _priv_k, _mnem = WalletV5R1.from_mnemonic(
-            client=client, mnemonic=mnemonics,
-        )
         pub_key, priv_key = mnemonic_to_wallet_key(mnemonics)
         return {
             "mnemonics": " ".join(mnemonics),
-            "key":priv_key,
+            "key": priv_key,
             "address": wallet.address.to_string(True, True, False),
             "raw_address": wallet.address.to_string(False),
-            "WR5": wallet_v5.address.to_str(True, True, False),
         }
 
     def get_address(self, bounceable: bool = True) -> str:
@@ -321,8 +317,8 @@ class TON:
                 return {
                     "symbol":"TON",
                     "decimals":DECIMALS,
-                    "balance":balance / NANOTON,
-                    "raw_balance":balance
+                    "balance_ui":balance / NANOTON,
+                    "balance":balance
                     }
 
             raise ValueError(f"Failed to get balance: {data}")
@@ -1135,8 +1131,8 @@ class TON:
             "symbol":        symbol,
             "name":          name or symbol,
             "decimals":      decimals,
-            "raw_balance":   raw_balance,
-            "balance":       raw_balance / (10 ** decimals),
+            "balance":   raw_balance,
+            "ui_balance":       raw_balance / (10 ** decimals),
             "jetton_wallet": str(jetton_wallet),
             "jetton_master": jetton_master,
         }

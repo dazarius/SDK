@@ -1,0 +1,24 @@
+{
+  "name": "orbispay",
+  "version": "0.1.0",
+  "description": "OrbisPay SDK for JavaScript (EVM cheques)",
+  "main": "src/index.js",
+  "browser": "dist/orbispay.min.js",
+  "unpkg": "dist/orbispay.min.js",
+  "jsdelivr": "dist/orbispay.min.js",
+  "files": [
+    "src",
+    "dist"
+  ],
+  "scripts": {
+    "build": "esbuild src/index.js --bundle --format=iife --global-name=OrbisPay --platform=browser --outfile=dist/orbispay.min.js --minify",
+    "watch": "esbuild src/index.js --bundle --format=iife --global-name=OrbisPay --platform=browser --outfile=dist/orbispay.min.js --minify --watch"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "ethers": "^6.13.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  }
+}

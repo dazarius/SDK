@@ -369,22 +369,43 @@ def _format_tx(explorer,tx_hash: str) -> str:
     return tx_hash
 
 
-def derive_cheque_id(params: dict, timestamp: Optional[int] = None) -> bytes:
+def derive_cheque_id(params: dict) -> str:
     """
-    Deterministic 32-byte cheque_id derived from cheque creation params + timestamp.
+    Deterministic cheque_id (hex) from params dict.
 
-    The timestamp guards against id collisions when identical params are reused
-    (e.g. same sender/recipient/amount cheque created twice — without it both
-    would derive the same id and the second on-chain init would fail).
+    sha256 of the same raw bytes that encode_cheque_payload() produces,
+    so encode → decode always gives the same cheque_id.
 
-    Pass the same *timestamp* you used at creation time to reproduce the id
-    locally for later lookups (id/PDA can be computed client-side, no round-trip
-    to the contract or backend needed).
+    For uniqueness across identical param sets add a timestamp/nonce directly
+    into params: derive_cheque_id({**params, "ts": int(time.time())})
     """
-    if timestamp is None:
-        timestamp = int(time.time())
-    payload = json.dumps({**params, "timestamp": timestamp}, sort_keys=True, separators=(",", ":"), default=str).encode()
-    return hashlib.sha256(payload).digest().hex()
+    raw = json.dumps(params, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def encode_cheque_payload(params: dict) -> str:
+    """
+    Pack cheque params into a hex string (raw UTF-8 JSON bytes).
+    sha256 of those same bytes = the on-chain cheque_id.
+
+    Share this string — recipient decodes it locally with decode_cheque_payload().
+    """
+    raw = json.dumps(params, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return raw.hex()
+
+
+def decode_cheque_payload(payload: str) -> dict:
+    """
+    Reverse of encode_cheque_payload(): unpack params and derive cheque_id locally.
+
+    Returns:
+        dict: {"params": dict, "cheque_id": str (hex)}
+    """
+    raw = bytes.fromhex(payload)
+    return {
+        "params":    json.loads(raw),
+        "cheque_id": hashlib.sha256(raw).hexdigest(),
+    }
 
 
 

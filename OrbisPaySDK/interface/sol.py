@@ -10,7 +10,7 @@ import spl.token.constants
 from spl.token.instructions import get_associated_token_address, create_associated_token_account, transfer, close_account, CloseAccountParams, TransferParams
 from solders.system_program import transfer as ts
 from solders.system_program import TransferParams as tsf
-from spl.token.constants import TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
+from spl.token.constants import TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID
 from solana.rpc.types import TxOpts, TokenAccountOpts
 from solana.rpc.types import TxOpts
 import solders
@@ -238,7 +238,6 @@ class SOL:
         lamports = resp.value
         sol_balance = lamports / LAMPORTS_PER_SOL
         return {
-            "balance": sol_balance,
             "ui_balance": sol_balance,
             "string_ui_balance": f"{sol_balance:.9f}",
             "raw_balance": lamports,
@@ -351,7 +350,7 @@ class SOL:
             
 
             return token_data
-    async def get_token_balance(self, data: dict):
+    async def get_token_balances(self, data: dict):
         """
         Fetches balances and Metaplex metadata for specific token mints across multiple wallets.
 
@@ -373,8 +372,6 @@ class SOL:
                 }
             }
         """
-        from solders.pubkey import Pubkey
-
         owner_pubkeys: list = data.get("owner_pubkeys") or []
         tokens: list = data.get("tokens") or []
 
@@ -395,26 +392,23 @@ class SOL:
 
         async def fetch_balance(owner: str, mint: str):
             try:
-                ata = get_associated_token_address(
-                    Pubkey.from_string(owner),
-                    Pubkey.from_string(mint),
-                )
                 payload = {
                     "jsonrpc": "2.0",
                     "id": 1,
-                    "method": "getTokenAccountBalance",
-                    "params": [str(ata)],
+                    "method": "getTokenAccountsByOwner",
+                    "params": [owner, {"mint": mint}, {"encoding": "jsonParsed"}],
                 }
                 async with httpx.AsyncClient() as client:
                     r = await client.post(self.rpc_url, json=payload, timeout=10)
                     result = r.json()
-                value = (result.get("result") or {}).get("value")
-                if not value:
+                accounts = (result.get("result") or {}).get("value") or []
+                if not accounts:
                     return owner, mint, {"ui_balance": 0.0, "raw_balance": "0", "string_ui_balance": "0"}
+                token_amount = accounts[0]["account"]["data"]["parsed"]["info"]["tokenAmount"]
                 return owner, mint, {
-                    "ui_balance":        value.get("uiAmount") or 0.0,
-                    "raw_balance":       value.get("amount", "0"),
-                    "string_ui_balance": value.get("uiAmountString", "0"),
+                    "ui_balance":        token_amount.get("uiAmount") or 0.0,
+                    "raw_balance":       token_amount.get("amount", "0"),
+                    "string_ui_balance": token_amount.get("uiAmountString", "0"),
                 }
             except Exception:
                 return owner, mint, {"ui_balance": 0.0, "raw_balance": "0", "string_ui_balance": "0"}
@@ -432,6 +426,56 @@ class SOL:
             owner, mint, bal = res
             output.setdefault(owner, {})[mint] = {**bal, "metadata": metadata_map.get(mint)}
         return output
+
+    async def get_token_balance(self, mint: str, owner_pubkey: str = None) -> dict:
+        """
+        Fetches the balance and Metaplex metadata for a single token mint on a single wallet.
+
+        Args:
+            mint         (str): Token mint address.
+            owner_pubkey (str): Owner address. Falls back to self.KEYPAIR if not provided.
+
+        Returns:
+            dict: {
+                "ui_balance":        float,
+                "raw_balance":       str,
+                "string_ui_balance": str,
+                "metadata":          dict | None,  # name, symbol, uri
+            }
+        """
+        if not owner_pubkey:
+            owner_pubkey = self.get_pubkey(returnString=True)
+
+        metadata = await self.fetch_metadata_raw(mint)
+
+        # Query real token accounts by mint (works for both classic SPL Token
+        # program and Token-2022 — doesn't assume a fixed ATA derivation).
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTokenAccountsByOwner",
+            "params": [
+                owner_pubkey,
+                {"mint": mint},
+                {"encoding": "jsonParsed"},
+            ],
+        }
+        async with httpx.AsyncClient() as client:
+            r = await client.post(self.rpc_url, json=payload, timeout=10)
+            result = r.json()
+
+        accounts = (result.get("result") or {}).get("value") or []
+        if not accounts:
+            return {"ui_balance": 0.0, "raw_balance": "0", "string_ui_balance": "0", "metadata": metadata}
+
+        token_amount = accounts[0]["account"]["data"]["parsed"]["info"]["tokenAmount"]
+        return {
+            "ui_balance":        token_amount.get("uiAmount") or 0.0,
+            "raw_balance":       token_amount.get("amount", "0"),
+            "string_ui_balance": token_amount.get("uiAmountString", "0"),
+            "metadata":          metadata,
+        }
+
     async def fetch_metadata_raw(self, mint_address: str):
         """
         Reads Metaplex on-chain metadata for a token directly from the metadata PDA account.
@@ -504,6 +548,13 @@ class SOL:
             "symbol": symbol.strip(),
             "uri": uri.strip(),  
         }
+    async def _get_token_program_id(self, mint_pubkey):
+        """Detect whether a mint belongs to the classic SPL Token program or Token-2022."""
+        info = await self.client.get_account_info(mint_pubkey)
+        if info.value and info.value.owner == TOKEN_2022_PROGRAM_ID:
+            return TOKEN_2022_PROGRAM_ID
+        return TOKEN_PROGRAM_ID
+
     async def transfer_token(self, to: str, amount, token_mint:str = None):
         """
         Transfers an SPL token to the given address.
@@ -531,8 +582,9 @@ class SOL:
         receiver_pubkey = solders.pubkey.Pubkey.from_string(to)
         token_pubkey = solders.pubkey.Pubkey.from_string(self.TOKEN_MINT)
 
-        sender_ata = get_associated_token_address(sender_pubkey, token_pubkey)
-        receiver_ata = get_associated_token_address(receiver_pubkey, token_pubkey)
+        token_program_id = await self._get_token_program_id(token_pubkey)
+        sender_ata = get_associated_token_address(sender_pubkey, token_pubkey, token_program_id)
+        receiver_ata = get_associated_token_address(receiver_pubkey, token_pubkey, token_program_id)
 
         ixs = []
         res = await self.client.get_account_info(receiver_ata)
@@ -541,10 +593,11 @@ class SOL:
                 payer=sender_pubkey,
                 owner=receiver_pubkey,
                 mint=token_pubkey,
+                token_program_id=token_program_id,
             ))
 
         ixs.append(transfer(TransferParams(
-            program_id=TOKEN_PROGRAM_ID,
+            program_id=token_program_id,
             source=sender_ata,
             dest=receiver_ata,
             owner=sender_pubkey,
@@ -632,7 +685,8 @@ class SOL:
 
         owner = kp.pubkey()
         token_pubkey = solders.pubkey.Pubkey.from_string(mint)
-        ata = get_associated_token_address(owner, token_pubkey)
+        token_program_id = await self._get_token_program_id(token_pubkey)
+        ata = get_associated_token_address(owner, token_pubkey, token_program_id)
 
         ixs = []
 
@@ -642,7 +696,7 @@ class SOL:
             fee_lamports = rent_lamports * 10 // 100
 
             ixs.append(close_account(CloseAccountParams(
-                program_id=TOKEN_PROGRAM_ID,
+                program_id=token_program_id,
                 account=ata,
                 dest=owner,
                 owner=owner,
@@ -657,7 +711,7 @@ class SOL:
         else:
             dest = solders.pubkey.Pubkey.from_string(destination) if destination else owner
             ixs.append(close_account(CloseAccountParams(
-                program_id=TOKEN_PROGRAM_ID,
+                program_id=token_program_id,
                 account=ata,
                 dest=dest,
                 owner=owner,
@@ -771,8 +825,9 @@ class SOL:
         receiver_pubkey = solders.pubkey.Pubkey.from_string(to)
         token_pubkey    = solders.pubkey.Pubkey.from_string(mint_addr)
 
-        sender_ata   = get_associated_token_address(sender, token_pubkey)
-        receiver_ata = get_associated_token_address(receiver_pubkey, token_pubkey)
+        token_program_id = await self._get_token_program_id(token_pubkey)
+        sender_ata   = get_associated_token_address(sender, token_pubkey, token_program_id)
+        receiver_ata = get_associated_token_address(receiver_pubkey, token_pubkey, token_program_id)
 
         ixs = []
         res = await self.client.get_account_info(receiver_ata)
@@ -782,13 +837,14 @@ class SOL:
                     payer=sender,
                     owner=receiver_pubkey,
                     mint=token_pubkey,
+                    token_program_id=token_program_id,
                 )
             )
 
         ixs.append(
             transfer(
                 TransferParams(
-                    program_id=TOKEN_PROGRAM_ID,
+                    program_id=token_program_id,
                     source=sender_ata,
                     dest=receiver_ata,
                     owner=sender,
@@ -1126,7 +1182,7 @@ class SOL:
                 "recent_blockhash": str,  # blockhash string used in the transaction
             }
         """
-        recent_blockhash = self.client.get_latest_blockhash(Confirmed).value.blockhash
+        recent_blockhash = (await self.client.get_latest_blockhash(Confirmed)).value.blockhash
 
         _from = solders.pubkey.Pubkey.from_string(data["_from"])
         _to = solders.pubkey.Pubkey.from_string(data["_to"])
@@ -1264,7 +1320,8 @@ class SOL:
             # ── legacy Transaction object ──
             elif hasattr(tx, 'message') and hasattr(tx, 'recent_blockhash'):
                 from solders.transaction import Transaction
-                final_tx = Transaction([signer], tx.message, tx.recent_blockhash)
+                fresh_blockhash = (await self.client.get_latest_blockhash()).value.blockhash
+                final_tx = Transaction([signer], tx.message, fresh_blockhash)
                 resp = await self.client.send_transaction(final_tx)
                 tx_hash = str(resp.value)
 
