@@ -4,6 +4,7 @@ from web3 import Web3
 from typing import Optional
 from eth_utils import keccak
 import time
+from OrbisPaySDK.const import ORBISPAY_CHEQUES_ABI, __ALLOW_CHAINS__
 
 try:
     from web3.middleware import ExtraDataToPOAMiddleware as _POAMiddleware
@@ -45,7 +46,6 @@ def _inject_poa(w3: Web3) -> None:
 
 class Cheque:
     def __init__(self, w3=None, private_key=None, ABI=None, allowed_chains=None, retunrn_build_tx=False, address=None, contract_address=None):
-        from OrbisPaySDK.const import ORBISPAY_CHEQUES_ABI, __ALLOW_CHAINS__
         self.w3 = w3
         self.amount = None
         self.token = None
