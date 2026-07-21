@@ -97,6 +97,8 @@ class Cheque:
 
     def __allow__(self):
         _inject_poa(self.w3)
+        if self.contract:
+            return self.contract
         for chain in self.allowed_chains:
             if chain == self.w3.eth.chain_id:
                 self.get_contract_for_chain(chain_id=self.w3.eth.chain_id)
