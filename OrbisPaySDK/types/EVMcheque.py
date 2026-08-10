@@ -100,7 +100,9 @@ class Cheque:
         if self.contract:
             return self.contract
         for chain in self.allowed_chains:
-            if chain == self.w3.eth.chain_id:
+            # support both old int lists and new dict format
+            chain_id = chain.get("chainIdDec") if isinstance(chain, dict) else chain
+            if chain_id == self.w3.eth.chain_id:
                 self.get_contract_for_chain(chain_id=self.w3.eth.chain_id)
                 return True
         raise ValueError(f"Chain not allowed: {self.w3.eth.chain_id}")
@@ -108,13 +110,26 @@ class Cheque:
     def get_contract_for_chain(self, chain_id):
         if self.contract:
             return self.contract
-        from OrbisPaySDK.const import ORBISPAY_CONTRACT_ADDRESS, ORBISPAY_CHEQUES_ABI
+        from OrbisPaySDK.const import ORBISPAY_CHEQUES_ABI
         chain_id = int(chain_id)
+        
+        # Try finding the address in the new __ALLOW_CHAINS__ dicts
+        for chain in self.allowed_chains:
+            if isinstance(chain, dict) and chain.get("chainIdDec") == chain_id:
+                addr = chain.get("contracts", {}).get("OrbisCheques")
+                if addr and addr != "0x0000000000000000000000000000000000000000":
+                    contract_address = self.w3.to_checksum_address(addr)
+                    self.contract = self.w3.eth.contract(address=contract_address, abi=ORBISPAY_CHEQUES_ABI)
+                    return self.contract
+        
+        # Fallback to old ORBISPAY_CONTRACT_ADDRESS dictionary
+        from OrbisPaySDK.const import ORBISPAY_CONTRACT_ADDRESS
         for key, value in ORBISPAY_CONTRACT_ADDRESS.items():
             if key == chain_id:
                 contract_address = self.w3.to_checksum_address(value)
                 self.contract = self.w3.eth.contract(address=contract_address, abi=ORBISPAY_CHEQUES_ABI)
                 return self.contract
+                
         raise ValueError(f"Chain {chain_id} not supported")
 
     async def get_address(self):

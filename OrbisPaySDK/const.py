@@ -92,15 +92,255 @@ BTC_TESTNET = BTCNetwork("Testnet", True,  "https://mempool.space/testnet")
 
 
 __ALLOW_CHAINS__ = [
-    56,  # BSC Mainnet
-    97,  # BSC Testnet
-    10143,
-    0x1,
-    0x1f984,
-    0x38,
-    0x66eed,
-    0x89,
-    0xa 
+    {
+        "name": "Base",
+        "address": "0x0000000000000000000000000000000000000000",
+        "nativeCurrency": {
+            "name": "Ether",
+            "symbol": "ETH",
+            "coingeckoId": "ethereum",
+            "decimals": 18
+        },
+        "rpcUrls": [
+            "https://mainnet.base.org"
+        ],
+        "wssUrls": [
+            "wss://base-rpc.publicnode.com"
+        ],
+        "blockExplorerUrls": [
+            "https://basescan.org"
+        ],
+        "chainIdHex": "0x2105",
+        "chainIdDec": 8453,
+        "gasPrice": 6000000000000000000000000,
+        "deployedDate": "2026-07-18 11:29:06",
+        "deployedTimestamp": 1784366946,
+        "treasury": "0x72bC9A1965ea2Cb87051f882462F319873Eb185f",
+        "feeDominator": 100000,
+        "fees": {
+            "NATIVE_BPS": 250,
+            "MULTI_BPS": 250,
+            "TOKEN_BPS": 250,
+            "SWAP_BPS": 250,
+            "maxBps": 1000
+        },
+        "txHash": "097a88ee6e970f2bc6106153c8f00d9b8beb6b24287433521afe5fb359b24566",
+        "explorer": "https://basescan.org/tx/097a88ee6e970f2bc6106153c8f00d9b8beb6b24287433521afe5fb359b24566",
+        "contractAddress": "0x455a2aAa7c7DcD413F05d56462dA13522E43d0D1",
+        "balanceEth": 0.001555194185002405,
+        "balanceUsd": 2.905056081758943,
+        "contracts": {
+            "OrbisInvoice": "0x0000000000000000000000000000000000000000",
+            "OrbisCheques": "0x455a2aAa7c7DcD413F05d56462dA13522E43d0D1"
+        }
+    },
+    {
+        "name": "BSC",
+        "chainIdHex": "0x38",
+        "chainIdDec": 56,
+        "address": "0x0000000000000000000000000000000000000000",
+        "nativeCurrency": {
+            "name": "BNB",
+            "symbol": "BNB",
+            "coingeckoId": "binancecoin",
+            "decimals": 18
+        },
+        "rpcUrls": [
+            "https://bsc-rpc.publicnode.com",
+            "https://bsc-mainnet.infura.io"
+
+        ],
+        "wssUrls": [
+            "wss://bsc-rpc.publicnode.com"
+        ],
+        "blockExplorerUrls": [
+            "https://bscscan.com"
+        ],
+        "gasPrice": 100000000000000000000000000,
+        "deployedDate": "2026-07-18 11:29:08",
+        "deployedTimestamp": 1784366948,
+        "treasury": "0x72bC9A1965ea2Cb87051f882462F319873Eb185f",
+        "feeDominator": 100000,
+        "fees": {
+            "NATIVE_BPS": 250,
+            "MULTI_BPS": 250,
+            "TOKEN_BPS": 250,
+            "SWAP_BPS": 250,
+            "maxBps": 1000
+        },
+        "txHash": "244cfb182d0461da8cd71f26ddeea48e404858443bea081c0a81b618bf493f61",
+        "explorer": "https://bscscan.com/tx/244cfb182d0461da8cd71f26ddeea48e404858443bea081c0a81b618bf493f61",
+        "contractAddress": "0x455a2aAa7c7DcD413F05d56462dA13522E43d0D1",
+        "balanceEth": 0.0040117876,
+        "balanceUsd": 2.3710065894760004,
+        "contracts": {
+            "OrbisInvoice": "0x0000000000000000000000000000000000000000",
+            "OrbisCheques": "0x455a2aAa7c7DcD413F05d56462dA13522E43d0D1"
+        }
+    },
+    {
+        "name": "Arbitrum",
+        "address": "0x0000000000000000000000000000000000000000",
+        "nativeCurrency": {
+            "name": "Ether",
+            "symbol": "ETH",
+            "coingeckoId": "ethereum",
+            "decimals": 18
+        },
+        "rpcUrls": [
+            "https://arb1.arbitrum.io/rpc"
+        ],
+        "wssUrls": [
+            "wss://arbitrum-one.publicnode.com"
+        ],
+        "blockExplorerUrls": [
+            "https://arbiscan.io/"
+        ],
+        "chainIdHex": "0xa4b1",
+        "chainIdDec": 42161,
+        "gasPrice": 20004000000000000000000000,
+        "deployedDate": "2026-07-18 11:29:08",
+        "deployedTimestamp": 1784366948,
+        "treasury": "0x72bC9A1965ea2Cb87051f882462F319873Eb185f",
+        "feeDominator": 100000,
+        "fees": {
+            "NATIVE_BPS": 250,
+            "MULTI_BPS": 250,
+            "TOKEN_BPS": 250,
+            "SWAP_BPS": 250,
+            "maxBps": 1000
+        },
+        "txHash": "b2dcb9bc75f33d33ddd0d218b7208d73814fcc9a8f22ba4ab0e5f3bf65fd7bc1",
+        "explorer": "https://arbiscan.io//tx/b2dcb9bc75f33d33ddd0d218b7208d73814fcc9a8f22ba4ab0e5f3bf65fd7bc1",
+        "contractAddress": "0x455a2aAa7c7DcD413F05d56462dA13522E43d0D1",
+        "balanceEth": 0.001403436652616,
+        "balanceUsd": 2.6215775639871093,
+        "contracts": {
+            "OrbisInvoice": "0x0000000000000000000000000000000000000000",
+            "OrbisCheques": "0x455a2aAa7c7DcD413F05d56462dA13522E43d0D1"
+        }
+    },
+    {
+        "name": "Optimism",
+        "address": "0x0000000000000000000000000000000000000000",
+        "nativeCurrency": {
+            "name": "Ether",
+            "symbol": "ETH",
+            "coingeckoId": "ethereum",
+            "decimals": 18
+        },
+        "rpcUrls": [
+            "https://optimism-rpc.publicnode.com"
+        ],
+        "wssUrls": [
+            "wss://optimism-rpc.publicnode.com"
+        ],
+        "blockExplorerUrls": [
+            "https://explorer.optimism.io/"
+        ],
+        "chainIdHex": "0xa",
+        "chainIdDec": 10,
+        "gasPrice": 1000345000000000000000000,
+        "deployedDate": "2026-07-18 11:29:11",
+        "deployedTimestamp": 1784366951,
+        "treasury": "0x72bC9A1965ea2Cb87051f882462F319873Eb185f",
+        "feeDominator": 100000,
+        "fees": {
+            "NATIVE_BPS": 250,
+            "MULTI_BPS": 250,
+            "TOKEN_BPS": 250,
+            "SWAP_BPS": 250,
+            "maxBps": 1000
+        },
+        "txHash": "40c5391a1ba7c496130c9ac30c1e69d9134b1d91f3b17d18ac848254126bdf5d",
+        "explorer": "https://explorer.optimism.io//tx/40c5391a1ba7c496130c9ac30c1e69d9134b1d91f3b17d18ac848254126bdf5d",
+        "contractAddress": "0x455a2aAa7c7DcD413F05d56462dA13522E43d0D1",
+        "balanceEth": 0.001819054465836274,
+        "balanceUsd": 3.3979391705481845,
+        "contracts": {
+            "OrbisInvoice": "0x0000000000000000000000000000000000000000",
+            "OrbisCheques": "0x455a2aAa7c7DcD413F05d56462dA13522E43d0D1"
+        }
+    },
+    {
+        "address": "0x0000000000000000000000000000000000000000",
+        "name": "Base Sepolia",
+        "testnet": true,
+        "nativeCurrency": {
+            "name": "Sepolia Ether",
+            "symbol": "ETH",
+            "coingeckoId": "ethereum",
+            "decimals": 18
+        },
+        "rpcUrls": [
+            "https://sepolia.base.org"
+        ],
+        "blockExplorerUrls": [
+            "https://sepolia.basescan.org"
+        ],
+        "chainIdHex": "0x14a34",
+        "chainIdDec": 84532,
+        "gasPrice": 6000000000000000000000000,
+        "deployedDate": "2026-07-18 11:29:13",
+        "deployedTimestamp": 1784366953,
+        "treasury": "0x72bC9A1965ea2Cb87051f882462F319873Eb185f",
+        "feeDominator": 100000,
+        "fees": {
+            "NATIVE_BPS": 250,
+            "MULTI_BPS": 250,
+            "TOKEN_BPS": 250,
+            "SWAP_BPS": 250,
+            "maxBps": 1000
+        },
+        "balanceEth": 0.0,
+        "balanceUsd": 0.0,
+        "contracts": {
+            "OrbisInvoice": "0x0000000000000000000000000000000000000000",
+            "OrbisCheques": "0x0000000000000000000000000000000000000000"
+        }
+    },
+    {
+        "name": "BSC Testnet",
+        "address": "0x0000000000000000000000000000000000000000",
+        "testnet": true,
+        "nativeCurrency": {
+            "name": "tBNB",
+            "symbol": "tBNB",
+            "coingeckoId": "binancecoin",
+            "decimals": 18
+        },
+        "rpcUrls": [
+            "https://bsc-testnet.publicnode.com"
+            
+        ],
+        "wssUrls": [
+            "wss://bsc-testnet.publicnode.com"
+        ],
+        "blockExplorerUrls": [
+            "https://testnet.bscscan.com"
+        ],
+        "chainIdHex": "0x61",
+        "chainIdDec": 97,
+        "gasPrice": 100000000000000000000000000,
+        "deployedDate": "2026-07-18 11:29:14",
+        "deployedTimestamp": 1784366954,
+        "treasury": "0x72bC9A1965ea2Cb87051f882462F319873Eb185f",
+        "contractAddress": "0xc00a171e6a821c0a5ac95070cb0ac61628ee4f78",
+        "feeDominator": 100000,
+        "fees": {
+            "NATIVE_BPS": 250,
+            "MULTI_BPS": 250,
+            "TOKEN_BPS": 250,
+            "SWAP_BPS": 250,
+            "maxBps": 1000
+        },
+        "balanceEth": 0.0,
+        "balanceUsd": 0.0,
+        "contracts": {
+            "OrbisInvoice": "0x0000000000000000000000000000000000000000",
+            "OrbisCheques": "0xc00a171e6a821c0a5ac95070cb0ac61628ee4f78"
+        }
+    }
 ]
 
 __SOL__NATIVE__ = "So11111111111111111111111111111111111111111"

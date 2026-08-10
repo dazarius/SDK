@@ -30,12 +30,12 @@ class CoinGecko(_BaseProvider):
     """
 
     COIN_ID_MAP: Dict[str, str] = {
-        "btc": "bitcoin", "bitcoin": "bitcoin",
-        "eth": "ethereum", "evm": "ethereum", "ethereum": "ethereum",
-        "bnb": "binancecoin", "bsc": "binancecoin", "binancecoin": "binancecoin",
-        "sol": "solana", "solana": "solana",
-        "trx": "tron", "tron": "tron",
-        "ton": "the-open-network", "the-open-network": "the-open-network",
+        "btc": "bitcoin", "tbtc": "bitcoin", "bitcoin": "bitcoin",
+        "eth": "ethereum", "teth": "ethereum", "evm": "ethereum", "ethereum": "ethereum", "goreth": "ethereum", "sepeth": "ethereum",
+        "bnb": "binancecoin", "tbnb": "binancecoin", "bsc": "binancecoin", "binancecoin": "binancecoin",
+        "sol": "solana", "tsol": "solana", "solana": "solana",
+        "trx": "tron", "ttrx": "tron", "tron": "tron",
+        "ton": "the-open-network", "tton": "the-open-network", "the-open-network": "the-open-network",
     }
     DEFAULT_COINS = ["bitcoin", "ethereum", "binancecoin", "solana", "tron", "the-open-network"]
     SYMBOL_MAP: Dict[str, str] = {
@@ -57,11 +57,12 @@ class CoinGecko(_BaseProvider):
             return list(self.DEFAULT_COINS)
         ids = []
         for c in coins:
-            cg_id = self.COIN_ID_MAP.get(c.lower())
+            c_clean = c.lower()
+            cg_id = self.COIN_ID_MAP.get(c_clean)
+            if not cg_id and c_clean.startswith("t") and len(c_clean) > 1:
+                cg_id = self.COIN_ID_MAP.get(c_clean[1:])
             if not cg_id:
-                raise ValueError(
-                    f"Unknown coin '{c}'. Supported: {list(self.COIN_ID_MAP.keys())}"
-                )
+                cg_id = c_clean
             ids.append(cg_id)
         return ids
 
