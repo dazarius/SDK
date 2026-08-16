@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='orbis_pay_sdk',
-    version='1.1.7',
+    version='1.1.8',
     description='OrbisPay SDK for ERC20/ERC721 and P2P smart contract interaction',
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
@@ -18,7 +18,7 @@ setup(
     install_requires=[
         'web3>=6.0.0',
         'requests>=2.28.0',
-        'solana>=0.35.0',
+        'solana==0.35.0',
     	'tonsdk', 
 	    'httpx',
 	    'tronpy',
