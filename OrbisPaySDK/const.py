@@ -265,7 +265,7 @@ __ALLOW_CHAINS__ = [
     {
         "address": "0x0000000000000000000000000000000000000000",
         "name": "Base Sepolia",
-        "testnet": true,
+        "testnet": True,
         "nativeCurrency": {
             "name": "Sepolia Ether",
             "symbol": "ETH",
@@ -302,7 +302,7 @@ __ALLOW_CHAINS__ = [
     {
         "name": "BSC Testnet",
         "address": "0x0000000000000000000000000000000000000000",
-        "testnet": true,
+        "testnet": True,
         "nativeCurrency": {
             "name": "tBNB",
             "symbol": "tBNB",
